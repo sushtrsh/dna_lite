@@ -24,7 +24,13 @@ import android.os.storage.StorageManager;
 import android.util.Base64;
 import android.os.Handler;
 import android.os.Looper;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.text.InputType;
+import android.text.Spannable;
+import android.text.SpannableStringBuilder;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -65,6 +71,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final int BG = 0xFF0C111E, SURFACE = 0xFF141B2D, SURFACE2 = 0xFF1B2438;
@@ -91,7 +99,7 @@ public class MainActivity extends Activity {
         Runnable onShow;
         EditorView editor;
         Explorer explorer;
-        boolean plain;   // layar tanpa chip Project/Root (explorer, console salin/pindah)
+        boolean plain;   // layar tanpa subjudul Project/Root (explorer, console)
     }
 
     private static final class Row {
@@ -141,8 +149,8 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ArrayList<Screen> stack = new ArrayList<>();
     private Runner runner;
-    private TextView title, back, projChip, rootChip;
-    private View logoBox, spacer, plus, chipsRow;
+    private TextView title, back, sub;
+    private View logoBox, spacer, plus, titleBox;
     private FrameLayout content;
     private final List<Row> rows = new ArrayList<>();
     private BaseAdapter homeAdapter;
@@ -169,13 +177,15 @@ public class MainActivity extends Activity {
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(16), dp(10), dp(12), dp(10));
-        back = text("←", 26, TXT, true);
-        back.setPadding(0, 0, dp(14), 0);
+        row.setPadding(dp(8), dp(8), dp(12), dp(8));
+        back = text("←", 24, TXT, true);
+        back.setGravity(Gravity.CENTER);
+        back.setBackground(ripple(0x00000000, 22));
         back.setVisibility(View.GONE);
         back.setOnClickListener(v -> onBackPressed());
         LinearLayout logo = new LinearLayout(this);
         logo.setGravity(Gravity.CENTER_VERTICAL);
+        logo.setPadding(dp(8), 0, 0, 0);
         ImageView mark = new ImageView(this);
         mark.setImageResource(R.drawable.ic_logo);
         TextView na = text("na", 30, ACCENT, true);
@@ -184,8 +194,18 @@ public class MainActivity extends Activity {
         logo.addView(mark);
         logo.addView(na, nlp);
         logoBox = logo;
-        title = text("", 20, TXT, true);
+        title = text("", 19, TXT, true);
         title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        sub = text("", 12, SUB, false);
+        sub.setSingleLine(true);
+        sub.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout tb = new LinearLayout(this);
+        tb.setOrientation(LinearLayout.VERTICAL);
+        tb.setPadding(dp(4), 0, dp(8), 0);
+        tb.addView(title);
+        tb.addView(sub);
+        titleBox = tb;
         spacer = new View(this);
         ImageView pl = new ImageView(this);
         pl.setImageResource(R.drawable.ic_plus);
@@ -193,29 +213,18 @@ public class MainActivity extends Activity {
         pl.setBackground(ripple(0x00000000, 22));
         pl.setOnClickListener(v -> newProjectDialog());
         plus = pl;
-        row.addView(back);
+        row.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
         row.addView(logoBox);
-        row.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(titleBox, new LinearLayout.LayoutParams(0, -2, 1f));
         row.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
         row.addView(plus, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         View divider = new View(this);
-        divider.setBackgroundColor(Color.WHITE);
-
-        LinearLayout chips = new LinearLayout(this);
-        chips.setPadding(dp(16), dp(12), dp(16), dp(0));
-        projChip = chip();
-        rootChip = chip();
-        chips.addView(projChip);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.leftMargin = dp(8);
-        chips.addView(rootChip, lp);
-        chipsRow = chips;
+        divider.setBackgroundColor(0x24FFFFFF);
 
         content = new FrameLayout(this);
         root.addView(row, new LinearLayout.LayoutParams(-1, -2));
-        root.addView(divider, new LinearLayout.LayoutParams(-1, Math.max(2, (int) (1.5f * getResources().getDisplayMetrics().density))));
-        root.addView(chipsRow, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(root);
         updateHeader();
@@ -388,18 +397,24 @@ public class MainActivity extends Activity {
 
     private void updateHeader() {
         boolean home = stack.size() <= 1;
-        if (!stack.isEmpty()) title.setText(stack.get(stack.size() - 1).title);
+        Screen top = stack.isEmpty() ? null : stack.get(stack.size() - 1);
+        if (top != null) title.setText(top.title);
         back.setVisibility(home ? View.GONE : View.VISIBLE);
         logoBox.setVisibility(home ? View.VISIBLE : View.GONE);
         spacer.setVisibility(home ? View.VISIBLE : View.GONE);
-        title.setVisibility(home ? View.GONE : View.VISIBLE);
+        titleBox.setVisibility(home ? View.GONE : View.VISIBLE);
         plus.setVisibility(home ? View.VISIBLE : View.GONE);
-        boolean exTop = !stack.isEmpty() && stack.get(stack.size() - 1).plain;
-        chipsRow.setVisibility(home || exTop ? View.GONE : View.VISIBLE);
-        projChip.setText("Project: " + display(project()));
-        boolean r = runner != null && runner.isRoot();
-        rootChip.setText(r ? "● Root" : "● No root");
-        rootChip.setTextColor(r ? OK : ERR);
+        boolean showSub = !home && top != null && !top.plain;
+        sub.setVisibility(showSub ? View.VISIBLE : View.GONE);
+        if (showSub) {
+            String pr = project();
+            boolean r = runner != null && runner.isRoot();
+            String head = pr.equals("none") ? "No project" : display(pr);
+            String dot = r ? "● Root" : "● No root";
+            SpannableStringBuilder sb = new SpannableStringBuilder(head + "   " + dot);
+            sb.setSpan(new ForegroundColorSpan(r ? OK : ERR), head.length() + 3, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sub.setText(sb);
+        }
     }
 
     private static String display(String name) {
@@ -534,7 +549,7 @@ public class MainActivity extends Activity {
         lv.setOnItemLongClickListener((a, v, pos, id) -> {
             Row r = rows.get(pos);
             if (r.kind == Row.PROJECT) {
-                deleteDialog(r.name);
+                projectMenu(r.name);
                 return true;
             }
             if (r.kind == Row.PIN) {
@@ -706,6 +721,12 @@ public class MainActivity extends Activity {
         }
         head.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
 
+        if (!pin) {
+            TextView mn = text("⋮", 20, SUB, true);
+            mn.setGravity(Gravity.CENTER);
+            mn.setOnClickListener(v -> projectMenu(r.name));
+            head.addView(mn, new LinearLayout.LayoutParams(dp(34), dp(54)));
+        }
         TextView go = text(pin ? "×" : "›", 32, ACCENT, true);
         go.setGravity(Gravity.CENTER);
         go.setPadding(0, 0, 0, dp(4));
@@ -1356,6 +1377,10 @@ public class MainActivity extends Activity {
         final AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setView(box).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        addAction(box, R.drawable.ic_edit, "Rename", "Change the " + (dir ? "folder" : "file") + " name", () -> {
+            d.dismiss();
+            renameDialog(path, name, dir);
+        });
         addAction(box, R.drawable.ic_copy, "Copy to…", "Keep the original where it is", () -> {
             d.dismiss();
             openExplorer(EX_DEST, path, false, null);
@@ -1394,7 +1419,7 @@ public class MainActivity extends Activity {
         Map<String, String> env = new LinkedHashMap<>();
         env.put("SRC", src);
         env.put("DST_DIR", destDir);
-        run((move ? "Move " : "Copy ") + baseName(src), "samples/transfer.sh " + (move ? "move" : "copy"), env, true);
+        run((move ? "Move " : "Copy ") + baseName(src), "samples/transfer.sh " + (move ? "move" : "copy"), env, null, true);
     }
 
     // ---------- explorer folder (pilih folder untuk di-pin / tujuan salin-pindah) ----------
@@ -1813,6 +1838,113 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // ---------- rename ----------
+    private EditText nameInput(String initial, boolean selectStem) {
+        EditText et = input();
+        et.setSingleLine(true);
+        et.setText(initial);
+        int dot = initial.lastIndexOf('.');
+        et.setSelection(0, selectStem && dot > 0 ? dot : initial.length());
+        return et;
+    }
+
+    private void renameDialog(String path, String oldName, boolean dir) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), dp(8));
+        EditText et = nameInput(oldName, !dir);
+        box.addView(et, new LinearLayout.LayoutParams(-1, -2));
+        TextView hint = text(path.substring(0, Math.max(0, path.lastIndexOf('/'))), 11, SUB, false);
+        hint.setTypeface(Typeface.MONOSPACE);
+        hint.setPadding(0, dp(8), 0, 0);
+        box.addView(hint);
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Rename " + (dir ? "folder" : "file")).setView(box)
+                .setPositiveButton("Rename", null).setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ACCENT);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String nn = et.getText().toString().trim();
+            if (nn.isEmpty() || nn.equals(".") || nn.equals("..") || nn.contains("/")) {
+                toast("Invalid name");
+                return;
+            }
+            if (nn.equals(oldName)) {
+                d.dismiss();
+                return;
+            }
+            d.dismiss();
+            Map<String, String> env = new LinkedHashMap<>();
+            env.put("SRC", path);
+            env.put("NEW", nn);
+            run("Rename " + oldName, "samples/rename.sh item", env, null, true);
+        });
+    }
+
+    private void renameProjectDialog(String name) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), dp(8));
+        EditText et = nameInput(display(name), false);
+        box.addView(et, new LinearLayout.LayoutParams(-1, -2));
+        TextView hint = text("Folder in /sdcard/DNA will be renamed to DNA_<name>", 12, SUB, false);
+        hint.setPadding(0, dp(8), 0, 0);
+        box.addView(hint);
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Rename project").setView(box)
+                .setPositiveButton("Rename", null).setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ACCENT);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String nn = et.getText().toString().trim().replaceAll("[^A-Za-z0-9._-]", "_");
+            if (nn.isEmpty()) {
+                toast("Enter a project name");
+                return;
+            }
+            String full = "DNA_" + nn;
+            if (full.equals(name)) {
+                d.dismiss();
+                return;
+            }
+            d.dismiss();
+            Map<String, String> env = new LinkedHashMap<>();
+            env.put("SRC", name);
+            env.put("NEW", full);
+            run("Rename " + display(name), "samples/rename.sh project", env, null, true);
+        });
+    }
+
+    private void projectMenu(String name) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(20), dp(18), dp(14));
+        TextView nm = text(display(name), 17, TXT, true);
+        nm.setSingleLine(true);
+        nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        box.addView(nm);
+        TextView mt = text("Project  •  /sdcard/DNA/" + name, 12, SUB, false);
+        mt.setPadding(0, dp(2), 0, dp(12));
+        box.addView(mt);
+        final AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setView(box).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        addAction(box, R.drawable.ic_edit, "Rename", "Change the project name", () -> {
+            d.dismiss();
+            renameProjectDialog(name);
+        });
+        addAction(box, R.drawable.ic_delete, "Delete", "Remove the project and its files", () -> {
+            d.dismiss();
+            deleteDialog(name);
+        });
+        d.show();
+    }
+
     private void deleteDialog(String name) {
         AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Delete project?")
@@ -1820,7 +1952,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Delete", (x, w) -> {
                     Map<String, String> env = new LinkedHashMap<>();
                     env.put("TSS", name);
-                    run("Delete " + display(name), "sh samples/project.sh SC", env);
+                    run("Delete " + display(name), "sh samples/project.sh SC", env, null, false);
                 })
                 .setNegativeButton("Cancel", null).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
@@ -1885,7 +2017,7 @@ public class MainActivity extends Activity {
     // ---------- action + parameter ----------
     private void openAction(Menu.Node n) {
         if (n.params.isEmpty()) {
-            run(n.title, n.set, new LinkedHashMap<String, String>());
+            run(n.title, n.set, new LinkedHashMap<String, String>(), n, false);
             return;
         }
         new Thread(() -> {
@@ -1938,7 +2070,7 @@ public class MainActivity extends Activity {
                 if (!p.name.isEmpty()) env.put(p.name, val);
             }
             d.dismiss();
-            run(n.title, n.set, env);
+            run(n.title, n.set, env, n, false);
         });
     }
 
@@ -2031,35 +2163,128 @@ public class MainActivity extends Activity {
         return g;
     }
 
-    // ---------- console ----------
+    // ---------- console (gaya log "Copy": judul, detail, Running…, Done in Xs) ----------
+    private static final Map<String, String> LABELS = new HashMap<>();
+    static {
+        LABELS.put("IMG", "Image");
+        LABELS.put("BR", "File");
+        LABELS.put("DAT", "File");
+        LABELS.put("ZST", "File");
+        LABELS.put("ZIP", "File");
+        LABELS.put("img", "Partition");
+        LABELS.put("TSL", "Project");
+        LABELS.put("TSS", "Project");
+        LABELS.put("T", "Name");
+        LABELS.put("TO", "Command");
+        LABELS.put("Brush_in", "Flash file");
+        LABELS.put("file", "File");
+        LABELS.put("sub", "Plugin");
+    }
+
+    private static final Pattern STEP_START = Pattern.compile("^(Unpacking|Packing|Extracting)\\b.*");
+    private static final String[][] ZH = {
+            {"开始分解", "Unpacking"}, {"分解完成", "Unpacked"}, {"开始打包", "Packing"}, {"打包完成", "Packed"},
+            {"开始解压", "Extracting"}, {"解压完成", "Extracted"}, {"开始提取", "Extracting"}, {"提取完成", "Extracted"},
+            {"开始转换", "Converting"}, {"转换完成", "Converted"}, {"开始", "Start"}, {"完成", "Done"},
+            {"成功", "success"}, {"失败", "failed"}, {"错误", "Error"}, {"警告", "Warning"},
+            {"不存在", "not found"}, {"文件位于", "files at"}, {"文件", "file"}, {"删除", "Delete"},
+            {"正在", "Working on"}, {"分解", "Unpack"}, {"打包", "Pack"}, {"解压", "Extract"},
+    };
+
+    static String fmtDur(long ms) {
+        long s = Math.max(0, ms / 1000);
+        if (s < 60) return s + "s";
+        return (s / 60) + "m " + (s % 60) + "s";
+    }
+
+    static String fmtClock(long ms) {
+        long s = Math.max(0, ms / 1000);
+        return String.format(Locale.US, "%02d:%02d", s / 60, s % 60);
+    }
+
     private final class Console {
         final LinearLayout root = new LinearLayout(MainActivity.this);
         final TextView tv = new TextView(MainActivity.this);
         final TextView status = chip();
+        final TextView timer = text("00:00", 12, SUB, false);
+        final TextView copy = text("Copy log", 12, ACCENT, true);
         final ScrollView sc = new ScrollView(MainActivity.this);
         final Button btn = button("Stop", ERR);
+        final long t0 = System.currentTimeMillis();
         private final StringBuilder pending = new StringBuilder();
         private boolean scheduled;
+        private volatile boolean done;
+        private long stepStart;
+        private final Runnable tick = new Runnable() {
+            @Override public void run() {
+                if (done) return;
+                timer.setText(fmtClock(System.currentTimeMillis() - t0));
+                ui.postDelayed(this, 1000);
+            }
+        };
 
         Console() {
             root.setOrientation(LinearLayout.VERTICAL);
-            root.setPadding(dp(14), dp(4), dp(14), dp(14));
+            root.setPadding(dp(14), dp(12), dp(14), dp(14));
             status.setText("● Running…");
             status.setTextColor(ACCENT);
+            timer.setTypeface(Typeface.MONOSPACE);
+            timer.setPadding(0, 0, dp(12), 0);
+            copy.setPadding(dp(10), dp(6), dp(10), dp(6));
+            copy.setBackground(ripple(0x00000000, 14));
+            copy.setOnClickListener(v -> {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null) {
+                    cm.setPrimaryClip(ClipData.newPlainText("DNA log", tv.getText().toString()));
+                    Toast.makeText(MainActivity.this, "Log copied", Toast.LENGTH_SHORT).show();
+                }
+            });
             tv.setTypeface(Typeface.MONOSPACE);
             tv.setTextSize(12);
+            tv.setLineSpacing(0, 1.12f);
             tv.setTextColor(0xFFD7DAE0);
             tv.setTextIsSelectable(true);
             tv.setPadding(dp(14), dp(14), dp(14), dp(14));
             sc.setBackground(rect(0xFF0A0C0F, 16));
             sc.addView(tv);
-            LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(-2, -2);
+            LinearLayout bar = new LinearLayout(MainActivity.this);
+            bar.setGravity(Gravity.CENTER_VERTICAL);
+            bar.addView(status);
+            bar.addView(new View(MainActivity.this), new LinearLayout.LayoutParams(0, 1, 1f));
+            bar.addView(timer);
+            bar.addView(copy);
+            LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(-1, -2);
             sl.bottomMargin = dp(10);
-            root.addView(status, sl);
+            root.addView(bar, sl);
             root.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1f));
             LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, dp(52));
             bl.topMargin = dp(12);
             root.addView(btn, bl);
+            ui.postDelayed(tick, 1000);
+        }
+
+        /** Terjemahkan output Mandarin dari binary dna + hitung durasi per langkah unpack. */
+        String tr(String line) {
+            String s = line;
+            if (s.startsWith("> ")) s = s.substring(2);
+            else if (s.startsWith(">")) s = s.substring(1);
+            s = s.replaceAll("分解完成[，,]\\s*文件位于[：:]\\s*", "✓ Unpacked to: ");
+            s = s.replaceAll("打包完成[，,]\\s*文件位于[：:]\\s*", "✓ Packed to: ");
+            for (String[] z : ZH) s = s.replace(z[0], z[1]);
+            s = s.replace("：", ": ").replace("，", ", ").replace("。", ".").replace("（", " (").replace("）", ")");
+            s = s.replaceAll(": {2,}", ": ").replaceAll("\\s+$", "");
+            long now = System.currentTimeMillis();
+            if (STEP_START.matcher(s).matches()) {
+                stepStart = now;
+            } else if (stepStart > 0 && s.startsWith("✓ ") && (s.contains("Unpacked") || s.contains("Packed") || s.contains("Extracted"))) {
+                s += "  (" + fmtDur(now - stepStart) + ")";
+                stepStart = 0;
+            }
+            return s;
+        }
+
+        void line(String l) {
+            append(tr(l) + "\n");
         }
 
         void append(String s) {
@@ -2071,6 +2296,23 @@ public class MainActivity extends Activity {
             ui.postDelayed(this::flush, 80);
         }
 
+        private CharSequence style(String line) {
+            SpannableStringBuilder sb = new SpannableStringBuilder(line);
+            if (line.isEmpty()) return sb;
+            if (line.startsWith("✓")) {
+                sb.setSpan(new ForegroundColorSpan(OK), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            } else if (line.startsWith("✕") || line.startsWith("!") || line.startsWith("！")) {
+                sb.setSpan(new ForegroundColorSpan(ERR), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            } else if (line.matches("^[A-Z][A-Z0-9 ._\\-]{1,40}$") || line.startsWith("Running…") || line.endsWith("…") && !line.startsWith(" ")) {
+                sb.setSpan(new ForegroundColorSpan(ACCENT), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sb.setSpan(new StyleSpan(Typeface.BOLD), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            } else {
+                Matcher m = Pattern.compile("^(\\s+[^:\\n]{1,16}?\\s*:)(\\s.*)?$").matcher(line);
+                if (m.matches()) sb.setSpan(new ForegroundColorSpan(SUB), 0, m.end(1), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            return sb;
+        }
+
         void flush() {
             String s;
             synchronized (pending) {
@@ -2078,7 +2320,16 @@ public class MainActivity extends Activity {
                 pending.setLength(0);
                 scheduled = false;
             }
-            tv.append(s);
+            if (!s.isEmpty()) {
+                SpannableStringBuilder out = new SpannableStringBuilder();
+                String[] parts = s.split("\n", -1);
+                for (int i = 0; i < parts.length; i++) {
+                    if (i == parts.length - 1 && parts[i].isEmpty()) break;
+                    out.append(style(parts[i]));
+                    if (i < parts.length - 1) out.append('\n');
+                }
+                tv.append(out);
+            }
             if (tv.length() > 300000) {
                 CharSequence t = tv.getText();
                 tv.setText(t.subSequence(150000, t.length()));
@@ -2086,10 +2337,19 @@ public class MainActivity extends Activity {
             sc.post(() -> sc.fullScroll(View.FOCUS_DOWN));
         }
 
-        void finish(int exit) {
-            flush();
+        void finish(int exit, boolean selfFooter) {
+            done = true;
+            long took = System.currentTimeMillis() - t0;
             boolean ok = exit == 0;
-            status.setText(ok ? "✓ Done" : "✕ Failed (exit " + exit + ")");
+            boolean stopped = exit == 143 || exit == 137 || exit == 130;
+            if (!selfFooter) {
+                append("\n" + (ok ? "✓ Done in " + fmtDur(took)
+                        : stopped ? "✕ Stopped after " + fmtDur(took)
+                        : "✕ Failed (exit " + exit + ") after " + fmtDur(took)) + "\n");
+            }
+            flush();
+            timer.setText(fmtClock(took));
+            status.setText(ok ? "✓ Done" : stopped ? "✕ Stopped" : "✕ Failed");
             status.setTextColor(ok ? OK : ERR);
             btn.setText("Close");
             btn.setTextColor(0xFF2B0A0A);
@@ -2097,11 +2357,92 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void run(String t, String body, Map<String, String> env) {
-        run(t, body, env, false);
+    private static String shortList(String v, String sep, boolean keepPath) {
+        String[] parts = v.split(Pattern.quote(sep.isEmpty() ? "," : sep) + "|\\n");
+        StringBuilder sb = new StringBuilder();
+        for (String x : parts) {
+            x = x.trim();
+            if (x.isEmpty()) continue;
+            if (!keepPath) x = baseName(x);
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(x);
+        }
+        return sb.toString();
     }
 
-    private void run(String t, String body, Map<String, String> env, boolean plain) {
+    /** Detail pekerjaan (Project / Item / From / Size / opsi) untuk header log. Panggil dari background thread. */
+    private List<String[]> jobInfo(Menu.Node job, Map<String, String> env) {
+        List<String[]> info = new ArrayList<>();
+        boolean hasProject = false;
+        String fileNames = "", fileBase = "";
+        List<String[]> opts = new ArrayList<>();
+        for (Map.Entry<String, String> e : env.entrySet()) {
+            String name = e.getKey(), val = e.getValue() == null ? "" : e.getValue();
+            Menu.Param p = null;
+            if (job != null) for (Menu.Param q : job.params) if (q.name.equals(name)) p = q;
+            boolean check = p != null && (p.type.equals("checkbox") || p.type.equals("switch"));
+            if (check) {
+                String lb = !p.label.isEmpty() ? p.label : name;
+                opts.add(new String[]{lb, val.equals("1") ? "Yes" : "No"});
+                continue;
+            }
+            if (val.trim().isEmpty()) continue;
+            String label = LABELS.containsKey(name) ? LABELS.get(name) : name;
+            boolean full = name.equals("Brush_in") || name.equals("file") || name.equals("TO");
+            String shown = full ? val : shortList(val, p != null ? p.separator : ",", false);
+            if (label.equals("Project")) {
+                hasProject = true;
+                shown = display(shown);
+                info.add(0, new String[]{label, shown});
+                continue;
+            }
+            info.add(new String[]{label, shown});
+            if (!full && (name.equals("ZIP") || name.equals("BR") || name.equals("DAT") || name.equals("ZST")
+                    || (name.equals("IMG") && !val.startsWith("/")))) {
+                fileNames = val;
+                fileBase = name.equals("ZIP") ? "$DNA_DIR" : "$DNA_PRO";
+            }
+        }
+        if (!hasProject && !env.containsKey("TSS")) {
+            String pr = project();
+            if (!pr.equals("none")) info.add(0, new String[]{"Project", display(pr)});
+        }
+        if (!fileNames.isEmpty()) {
+            String sep = ",";
+            if (job != null) for (Menu.Param q : job.params) if (q.multiple && !q.separator.isEmpty() && fileNames.contains(q.separator)) sep = q.separator;
+            StringBuilder cmd = new StringBuilder("cd \"" + fileBase + "\" 2>/dev/null || exit 0\ndu -ch --");
+            int cnt = 0;
+            for (String f : fileNames.split(Pattern.quote(sep) + "|\\n")) {
+                if (f.trim().isEmpty()) continue;
+                cmd.append(' ').append(Runner.q(f.trim()));
+                cnt++;
+            }
+            String sz = cnt == 0 ? "" : runner.capture(cmd + " 2>/dev/null | tail -1 | cut -f1").trim();
+            String from = fileBase.equals("$DNA_DIR") ? "/sdcard/DNA" : "/sdcard/DNA/" + project();
+            info.add(new String[]{"From", from});
+            if (!sz.isEmpty()) info.add(new String[]{"Size", sz});
+        }
+        info.addAll(opts);
+        return info;
+    }
+
+    private static String header(String title, List<String[]> info) {
+        int w = 4;
+        for (String[] i : info) w = Math.max(w, i[0].length());
+        StringBuilder sb = new StringBuilder(title.toUpperCase(Locale.ROOT)).append('\n');
+        for (String[] i : info) {
+            StringBuilder lb = new StringBuilder(i[0]);
+            while (lb.length() < w) lb.append(' ');
+            sb.append("  ").append(lb).append(" : ").append(i[1]).append('\n');
+        }
+        return sb.append('\n').toString();
+    }
+
+    /**
+     * @param job        node aksi (untuk label parameter), boleh null
+     * @param selfHeader true kalau script sudah mencetak header + "Done in" sendiri (copy / move / rename)
+     */
+    private void run(String t, String body, Map<String, String> env, Menu.Node job, boolean selfHeader) {
         if (running != null) {
             toast("Another task is running");
             return;
@@ -2117,27 +2458,30 @@ public class MainActivity extends Activity {
             }
         });
         push(t, c.root);
-        stack.get(stack.size() - 1).plain = plain;
+        stack.get(stack.size() - 1).plain = true;
         updateHeader();
         new Thread(() -> {
             int code = -1;
             Runner.Started st = null;
             try {
+                if (!selfHeader) {
+                    c.append(header(t, jobInfo(job, env)) + "Running…\n");
+                }
                 st = runner.start(body, env, true);
                 running = st;
                 BufferedReader r = new BufferedReader(new InputStreamReader(st.proc.getInputStream(), "UTF-8"));
                 String l;
-                while ((l = r.readLine()) != null) c.append(l + "\n");
+                while ((l = r.readLine()) != null) c.line(l);
                 code = st.proc.waitFor();
             } catch (Exception e) {
-                c.append("! " + e + "\n");
+                c.append("✕ " + e + "\n");
             } finally {
                 if (st != null) st.cleanup();
                 running = null;
             }
             final int exit = code;
             ui.post(() -> {
-                c.finish(exit);
+                c.finish(exit, selfHeader && exit == 0);
                 updateHeader();
             });
         }).start();
