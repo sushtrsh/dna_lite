@@ -159,6 +159,44 @@ public class MainActivity extends Activity {
         View acts;
     }
 
+    private static final int VISIBLE_ROWS = 5;   // jumlah baris file yang tampil sekaligus di kartu
+
+    /** Daftar file dengan tinggi maksimal N baris, sisanya digulir di dalam kartu (tetap bisa gulir list utama di ujung). */
+    private static final class FilesScroll extends ScrollView {
+        private final int maxH;
+        private float lastY;
+
+        FilesScroll(Context c, int maxH) {
+            super(c);
+            this.maxH = maxH;
+            setOverScrollMode(OVER_SCROLL_NEVER);
+            setVerticalScrollBarEnabled(true);
+            setScrollbarFadingEnabled(true);
+        }
+
+        @Override protected void onMeasure(int w, int h) {
+            super.onMeasure(w, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST));
+        }
+
+        @Override public boolean dispatchTouchEvent(android.view.MotionEvent e) {
+            switch (e.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    lastY = e.getY();
+                    getParent().requestDisallowInterceptTouchEvent(canScrollVertically(-1) || canScrollVertically(1));
+                    break;
+                case android.view.MotionEvent.ACTION_MOVE: {
+                    float dy = e.getY() - lastY;
+                    lastY = e.getY();
+                    boolean atEdge = (dy > 0 && !canScrollVertically(-1)) || (dy < 0 && !canScrollVertically(1));
+                    getParent().requestDisallowInterceptTouchEvent(!atEdge && (canScrollVertically(-1) || canScrollVertically(1)));
+                    break;
+                }
+                default: break;
+            }
+            return super.dispatchTouchEvent(e);
+        }
+    }
+
     private static final Interpolator EASE = new PathInterpolator(0.4f, 0f, 0.2f, 1f);
     private boolean popping;   // arah transisi layar: true = kembali
 
@@ -1172,7 +1210,12 @@ public class MainActivity extends Activity {
             e.setPadding(0, dp(8), 0, 0);
             box.addView(e);
         } else {
-            for (String[] f : b.files) box.addView(entryRow(r, f));
+            LinearLayout items = new LinearLayout(this);
+            items.setOrientation(LinearLayout.VERTICAL);
+            for (String[] f : b.files) items.addView(entryRow(r, f));
+            FilesScroll fs = new FilesScroll(this, dp(46) * VISIBLE_ROWS);
+            fs.addView(items, new FrameLayout.LayoutParams(-1, -2));
+            box.addView(fs, new LinearLayout.LayoutParams(-1, -2));
         }
         if (b.unpackChip != null) b.unpackChip.setAlpha(countActionable(b) > 0 ? 1f : 0.4f);
         return box;
