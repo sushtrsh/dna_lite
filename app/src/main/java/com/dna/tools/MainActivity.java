@@ -608,23 +608,25 @@ public class MainActivity extends Activity {
     }
 
     private Row storageRow() {
-        // Use one filesystem consistently. StorageStatsManager.UUID_DEFAULT can describe
-        // the whole primary storage volume, while /data may be smaller than that volume.
-        // Mixing its total/free values with /data StatFs makes the card inconsistent with df.
         try {
-            StatFs sf = new StatFs(Environment.getDataDirectory().getPath());
+            StatFs sf = new StatFs(
+                    Environment.getDataDirectory().getAbsolutePath()
+            );
+
             long total = sf.getTotalBytes();
-            // AvailableBytes is the space currently available to apps on this filesystem.
-            long free = sf.getAvailableBytes();
-            if (total <= 0 || free < 0 || free > total) return null;
+            long available = sf.getAvailableBytes();
+
+            if (total <= 0 || available < 0 || available > total) {
+                return null;
+            }
 
             Row r = new Row();
             r.kind = Row.STORAGE;
-            r.freeBytes = free;
-            r.avail = humanSize(free);
+            r.freeBytes = available;
+            r.avail = humanSize(available);
             r.total = humanSize(total);
-            r.text = humanSize(Math.max(0, total - free));
-            r.pct = total > 0 ? (int) ((total - free) * 100 / total) : 0;
+            r.text = humanSize(total - available);
+            r.pct = (int) ((total - available) * 100L / total);
             return r;
         } catch (Exception e) {
             return null;
