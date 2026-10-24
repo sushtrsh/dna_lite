@@ -16,6 +16,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.StatFs;
+import android.os.storage.StorageManager;
+import android.util.Base64;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
@@ -42,6 +44,7 @@ import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -81,6 +84,7 @@ public class MainActivity extends Activity {
         View view;
         boolean home;
         Runnable onShow;
+        EditorView editor;
     }
 
     private static final class Row {
@@ -360,11 +364,33 @@ public class MainActivity extends Activity {
             return;
         }
         if (stack.size() > 1) {
+            Screen top = stack.get(stack.size() - 1);
+            if (top.editor != null && top.editor.isDirty()) {
+                confirmDiscard();
+                return;
+            }
             stack.remove(stack.size() - 1);
             showTop();
         } else {
             super.onBackPressed();
         }
+    }
+
+    private void confirmDiscard() {
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Discard changes?")
+                .setMessage("This file has unsaved changes.")
+                .setPositiveButton("Discard", (x, w) -> {
+                    if (stack.size() > 1) {
+                        stack.remove(stack.size() - 1);
+                        showTop();
+                    }
+                })
+                .setNegativeButton("Keep editing", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ERR);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
     }
 
     // ---------- daftar menu ----------
@@ -578,20 +604,36 @@ public class MainActivity extends Activity {
     }
 
     private Row storageRow() {
+        long total = 0, free = 0;
+        // Angka yang sama dengan Settings (termasuk cache yang bisa dibersihkan)
         try {
-            StatFs sf = new StatFs(Environment.getDataDirectory().getPath());
-            long total = sf.getTotalBytes(), free = sf.getAvailableBytes();
-            Row r = new Row();
-            r.kind = Row.STORAGE;
-            r.freeBytes = free;
-            r.avail = humanSize(free);
-            r.total = humanSize(total);
-            r.text = humanSize(Math.max(0, total - free));
-            r.pct = total > 0 ? (int) ((total - free) * 100 / total) : 0;
-            return r;
+            if (Build.VERSION.SDK_INT >= 26) {
+                android.app.usage.StorageStatsManager m = (android.app.usage.StorageStatsManager)
+                        getSystemService(android.content.Context.STORAGE_STATS_SERVICE);
+                total = m.getTotalBytes(StorageManager.UUID_DEFAULT);
+                free = m.getFreeBytes(StorageManager.UUID_DEFAULT);
+            }
         } catch (Exception e) {
-            return null;
+            total = 0;
+            free = 0;
         }
+        if (total <= 0 || free <= 0 || free > total) {
+            try {
+                StatFs sf = new StatFs(Environment.getExternalStorageDirectory().getPath());
+                total = sf.getTotalBytes();
+                free = sf.getAvailableBytes();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        Row r = new Row();
+        r.kind = Row.STORAGE;
+        r.freeBytes = free;
+        r.avail = humanSize(free);
+        r.total = humanSize(total);
+        r.text = humanSize(Math.max(0, total - free));
+        r.pct = total > 0 ? (int) ((total - free) * 100 / total) : 0;
+        return r;
     }
 
     private static String humanSize(long b) {
@@ -789,9 +831,80 @@ public class MainActivity extends Activity {
                 reloadDir(r);
             });
         } else {
-            row.setOnClickListener(v -> { });
+            long sz = 0;
+            try { sz = Long.parseLong(f[2].trim()); } catch (Exception ignored) { }
+            final long fsz = sz;
+            row.setOnClickListener(v -> openEditor(r, f[1], fsz));
         }
         return row;
+    }
+
+    private static final String B64 = "B=base64; command -v base64 >/dev/null 2>&1 || B='busybox base64'\n";
+
+    private void openEditor(Row r, String name, long size) {
+        if (size > 512 * 1024) {
+            toast("File too large to edit (max 512 KB)");
+            return;
+        }
+        if (runner == null) return;
+        final String path = pathOf(r) + "/" + name;
+        toast("Opening " + name + "…");
+        new Thread(() -> {
+            byte[] data = null;
+            try {
+                String b64 = runner.capture(B64 + "$B < " + Runner.q(path) + "\n");
+                data = Base64.decode(b64, Base64.DEFAULT);
+            } catch (Exception ignored) { }
+            final byte[] d = data;
+            ui.post(() -> {
+                if (d == null || (d.length == 0 && size > 0)) {
+                    toast("Cannot read file");
+                    return;
+                }
+                for (int i = 0; i < Math.min(d.length, 4096); i++) {
+                    if (d[i] == 0) {
+                        toast("Binary file, can't open in editor");
+                        return;
+                    }
+                }
+                String text;
+                try { text = new String(d, "UTF-8"); } catch (Exception e) { text = new String(d); }
+                final EditorView ev = new EditorView(this, name, text, humanSize(d.length),
+                        (t, done) -> saveFile(path, t, done));
+                push(name, ev);
+                stack.get(stack.size() - 1).editor = ev;
+            });
+        }).start();
+    }
+
+    private void saveFile(String path, String text, EditorView.Done done) {
+        new Thread(() -> {
+            boolean ok = false;
+            File in = null, out = null;
+            try {
+                in = File.createTempFile("ed_", ".b64", getCacheDir());
+                out = new File(in.getAbsolutePath() + ".out");
+                FileOutputStream o = new FileOutputStream(in);
+                o.write(Base64.encode(text.getBytes("UTF-8"), Base64.NO_WRAP));
+                o.close();
+                in.setReadable(true, false);
+                // decode ke file sementara dulu, supaya file asli tidak terpotong kalau decode gagal
+                String res = runner.capture(B64 + "$B -d < " + Runner.q(in.getAbsolutePath())
+                        + " > " + Runner.q(out.getAbsolutePath())
+                        + " && cat " + Runner.q(out.getAbsolutePath()) + " > " + Runner.q(path)
+                        + " && echo SAVED_OK\n");
+                ok = res.contains("SAVED_OK");
+            } catch (Exception ignored) {
+            } finally {
+                if (in != null) in.delete();
+                if (out != null) out.delete();
+            }
+            final boolean fok = ok;
+            ui.post(() -> {
+                toast(fok ? "Saved" : "Save failed");
+                done.done(fok);
+            });
+        }).start();
     }
 
     private void confirmDelete(Row r, String name, boolean dir) {
