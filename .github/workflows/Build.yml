@@ -61,6 +61,27 @@ jobs:
           name: DNA-Lite
           path: DNA-Lite.apk
 
+      - name: Kirim APK ke Telegram channel
+        if: success() && github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
+            echo "TELEGRAM_TOKEN / TELEGRAM_CHAT_ID belum diisi, lewati."
+            exit 0
+          fi
+          VER=$(grep -m1 "versionName" app/build.gradle | sed "s/.*versionName *['\"]\([^'\"]*\)['\"].*/\1/")
+          SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          CAPTION=$(printf 'DNA Lite %s\nCommit: %s %s\nBuild: %s' "$VER" "$SHA" "$(echo "$COMMIT_MSG" | head -n1)" "$RUN_URL")
+          curl -sS --fail-with-body -X POST "https://api.telegram.org/bot${TOKEN}/sendDocument" \
+            --form-string "chat_id=${CHAT_ID}" \
+            -F "document=@DNA-Lite.apk;filename=DNA-Lite-${VER}.apk" \
+            --form-string "caption=${CAPTION}"
+
       - name: Publish release (tag v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

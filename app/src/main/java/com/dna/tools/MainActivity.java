@@ -540,6 +540,10 @@ public class MainActivity extends Activity {
             warn.setPadding(0, dp(6), 0, 0);
             card.addView(warn);
         }
+        TextView hint = text("Tap for details", 11, SUB, false);
+        hint.setPadding(0, dp(8), 0, 0);
+        card.addView(hint);
+        card.setOnClickListener(v -> showStorageInfo());
         wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
         return wrap;
     }
@@ -634,6 +638,58 @@ public class MainActivity extends Activity {
         r.text = humanSize(Math.max(0, total - free));
         r.pct = total > 0 ? (int) ((total - free) * 100 / total) : 0;
         return r;
+    }
+
+    private String statLine(String label, String path) {
+        try {
+            StatFs sf = new StatFs(path);
+            return label + " (" + path + ")\n  total " + humanSize(sf.getTotalBytes())
+                    + "\n  avail " + humanSize(sf.getAvailableBytes())
+                    + "\n  free  " + humanSize(sf.getFreeBytes()) + "\n\n";
+        } catch (Exception e) {
+            return label + ": error " + e.getMessage() + "\n\n";
+        }
+    }
+
+    /** Tampilkan angka storage dari beberapa sumber sekaligus, untuk mencari mana yang salah. */
+    private void showStorageInfo() {
+        new Thread(() -> {
+            StringBuilder sb = new StringBuilder();
+            try {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    android.app.usage.StorageStatsManager m = (android.app.usage.StorageStatsManager)
+                            getSystemService(android.content.Context.STORAGE_STATS_SERVICE);
+                    sb.append("StorageStats (Settings)\n  total ")
+                            .append(humanSize(m.getTotalBytes(StorageManager.UUID_DEFAULT)))
+                            .append("\n  free  ")
+                            .append(humanSize(m.getFreeBytes(StorageManager.UUID_DEFAULT))).append("\n\n");
+                }
+            } catch (Exception e) {
+                sb.append("StorageStats: error ").append(e.getMessage()).append("\n\n");
+            }
+            sb.append(statLine("StatFs sdcard", Environment.getExternalStorageDirectory().getPath()));
+            sb.append(statLine("StatFs data", Environment.getDataDirectory().getPath()));
+            if (runner != null) {
+                sb.append("df (shell").append(runner.isRoot() ? ", root" : "").append(")\n")
+                        .append(runner.capture("df -h /data /sdcard /data/media 2>&1"));
+            }
+            final String msg = sb.toString();
+            ui.post(() -> {
+                TextView tv = text(msg, 12, TXT, false);
+                tv.setTypeface(Typeface.MONOSPACE);
+                tv.setTextIsSelectable(true);
+                tv.setPadding(dp(20), dp(8), dp(20), dp(8));
+                ScrollView sv = new ScrollView(this);
+                sv.addView(tv);
+                AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                        .setTitle("Storage details")
+                        .setView(sv)
+                        .setPositiveButton("Close", null).create();
+                d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+                d.show();
+                d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ACCENT);
+            });
+        }).start();
     }
 
     private static String humanSize(long b) {
