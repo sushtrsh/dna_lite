@@ -520,7 +520,7 @@ public class MainActivity extends Activity {
         card.setBackground(rect(SURFACE, 18));
         card.setPadding(dp(18), dp(16), dp(18), dp(16));
         card.addView(text("INTERNAL STORAGE", 11, SUB, true));
-        TextView big = text(r.avail + " free", 22, TXT, true);
+        TextView big = text(r.avail + " available", 22, TXT, true);
         big.setPadding(0, dp(4), 0, dp(10));
         card.addView(big);
         LinearLayout bar = new LinearLayout(this);
@@ -608,36 +608,27 @@ public class MainActivity extends Activity {
     }
 
     private Row storageRow() {
-        long total = 0, free = 0;
-        // Angka yang sama dengan Settings (termasuk cache yang bisa dibersihkan)
+        // Use one filesystem consistently. StorageStatsManager.UUID_DEFAULT can describe
+        // the whole primary storage volume, while /data may be smaller than that volume.
+        // Mixing its total/free values with /data StatFs makes the card inconsistent with df.
         try {
-            if (Build.VERSION.SDK_INT >= 26) {
-                android.app.usage.StorageStatsManager m = (android.app.usage.StorageStatsManager)
-                        getSystemService(android.content.Context.STORAGE_STATS_SERVICE);
-                total = m.getTotalBytes(StorageManager.UUID_DEFAULT);
-                free = m.getFreeBytes(StorageManager.UUID_DEFAULT);
-            }
+            StatFs sf = new StatFs(Environment.getDataDirectory().getPath());
+            long total = sf.getTotalBytes();
+            // AvailableBytes is the space currently available to apps on this filesystem.
+            long free = sf.getAvailableBytes();
+            if (total <= 0 || free < 0 || free > total) return null;
+
+            Row r = new Row();
+            r.kind = Row.STORAGE;
+            r.freeBytes = free;
+            r.avail = humanSize(free);
+            r.total = humanSize(total);
+            r.text = humanSize(Math.max(0, total - free));
+            r.pct = total > 0 ? (int) ((total - free) * 100 / total) : 0;
+            return r;
         } catch (Exception e) {
-            total = 0;
-            free = 0;
+            return null;
         }
-        if (total <= 0 || free <= 0 || free > total) {
-            try {
-                StatFs sf = new StatFs(Environment.getExternalStorageDirectory().getPath());
-                total = sf.getTotalBytes();
-                free = sf.getAvailableBytes();
-            } catch (Exception e) {
-                return null;
-            }
-        }
-        Row r = new Row();
-        r.kind = Row.STORAGE;
-        r.freeBytes = free;
-        r.avail = humanSize(free);
-        r.total = humanSize(total);
-        r.text = humanSize(Math.max(0, total - free));
-        r.pct = total > 0 ? (int) ((total - free) * 100 / total) : 0;
-        return r;
     }
 
     private String statLine(String label, String path) {
