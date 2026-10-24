@@ -191,6 +191,10 @@ public class MainActivity extends Activity {
                     getParent().requestDisallowInterceptTouchEvent(!atEdge && (canScrollVertically(-1) || canScrollVertically(1)));
                     break;
                 }
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    break;
                 default: break;
             }
             return super.dispatchTouchEvent(e);
@@ -805,7 +809,14 @@ public class MainActivity extends Activity {
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
         head.setPadding(dp(14), dp(12), dp(10), dp(12));
-        head.setDuplicateParentStateEnabled(true);
+        head.setBackground(ripple(0x00000000, 16));
+        head.setOnClickListener(v -> toggleProject(r));
+        head.setOnLongClickListener(v -> {
+            v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            if (pin) unpinDialog(r.name);
+            else projectMenu(r.name);
+            return true;
+        });
         FrameLayout badge = new FrameLayout(this);
         badge.setBackground(rect(0x22FF8282, 14));
         ImageView ic = new ImageView(this);
@@ -1012,6 +1023,14 @@ public class MainActivity extends Activity {
                 return;
             }
             animateHeight(b, host, host.getHeight(), 0, host::removeAllViews);
+            ui.postDelayed(() -> {
+                if (!b.open && b.host != null && b.host.getChildCount() > 0) {
+                    b.host.removeAllViews();
+                    ViewGroup.LayoutParams lp = b.host.getLayoutParams();
+                    lp.height = -2;
+                    b.host.setLayoutParams(lp);
+                }
+            }, 600);
             return;
         }
         b.open = true;
