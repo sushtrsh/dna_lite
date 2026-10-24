@@ -14,6 +14,8 @@ import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.os.StatFs;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
@@ -67,9 +69,10 @@ public class MainActivity extends Activity {
             + "  s=$(du -sh \"$d\" 2>/dev/null | cut -f1)\n"
             + "  c=$(ls -1 \"$d\" 2>/dev/null | wc -l)\n"
             + "  m=$(stat -c %Y \"$d\" 2>/dev/null)\n"
-            + "  echo \"P|$n|$s|$c|$m\"\n"
-            + "done\n"
-            + "df -h /sdcard 2>/dev/null | tail -1 | awk '{print \"S|\"$4\"|\"$2\"|\"$5}'\n";
+            + "  u=0; uc=0\n"
+            + "  if [ -d \"$DNA_TMP/$n\" ]; then u=1; uc=$(ls -1 \"$DNA_TMP/$n\" 2>/dev/null | wc -l); fi\n"
+            + "  echo \"P|$n|$s|$c|$m|$u|$uc\"\n"
+            + "done\n";
 
     private interface Getter { String get(); }
 
@@ -87,8 +90,17 @@ public class MainActivity extends Activity {
         int count, pct;
         long mtime;
         Menu.Node node;
-        boolean expanded, loading;
-        List<String[]> files;
+        Browse b;
+        boolean hasUnpacked;
+        int uCount;
+        long freeBytes;
+    }
+
+    private static final class Browse {
+        boolean open, loading;
+        int base;   // 0 = /sdcard/DNA/<project>, 1 = hasil unpack di /data/DNA/<project>
+        final List<String> sub = new ArrayList<>();
+        List<String[]> files = new ArrayList<>();
     }
 
     private static final class Sec {
@@ -114,8 +126,7 @@ public class MainActivity extends Activity {
     private BaseAdapter homeAdapter;
     private List<Menu.Node> toolNodes = new ArrayList<>();
     private Menu.Node unzipNode;
-    private final Set<String> expandedSet = new HashSet<>();
-    private final Map<String, List<String[]>> fileCache = new HashMap<>();
+    private final Map<String, Browse> browse = new HashMap<>();
     private volatile Runner.Started running;
 
     @Override
@@ -489,15 +500,20 @@ public class MainActivity extends Activity {
         LinearLayout bar = new LinearLayout(this);
         bar.setBackground(rect(SURFACE2, 4));
         View fill = new View(this);
-        fill.setBackground(rect(r.pct > 90 ? ERR : ACCENT, 4));
+        fill.setBackground(rect(r.freeBytes < 5L * 1024 * 1024 * 1024 ? ERR : ACCENT, 4));
         int pct = Math.max(2, Math.min(100, r.pct));
         bar.addView(fill, new LinearLayout.LayoutParams(0, dp(8), pct));
         bar.addView(new View(this), new LinearLayout.LayoutParams(0, dp(8), 100 - pct));
         card.addView(bar, new LinearLayout.LayoutParams(-1, dp(8)));
         boolean root = runner != null && runner.isRoot();
-        TextView foot = text(r.pct + "% of " + r.total + " used  •  " + (root ? "Root ✓" : "No root"), 12, SUB, false);
+        TextView foot = text(r.text + " of " + r.total + " used  •  " + (root ? "Root ✓" : "No root"), 12, SUB, false);
         foot.setPadding(0, dp(10), 0, 0);
         card.addView(foot);
+        if (r.freeBytes < 10L * 1024 * 1024 * 1024) {
+            TextView warn = text("Low space: unpacking a ROM needs several GB free", 12, ERR, false);
+            warn.setPadding(0, dp(6), 0, 0);
+            card.addView(warn);
+        }
         wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
         return wrap;
     }
@@ -531,7 +547,7 @@ public class MainActivity extends Activity {
         nm.setSingleLine(true);
         nm.setEllipsize(TextUtils.TruncateAt.END);
         nameRow.addView(nm, new LinearLayout.LayoutParams(-2, -2, 0f));
-        TextView arrow = text(r.expanded ? "  ▴" : "  ▾", 12, SUB, false);
+        TextView arrow = text(r.b != null && r.b.open ? "  ▴" : "  ▾", 12, SUB, false);
         nameRow.addView(arrow);
         if (active) {
             TextView t = text("ACTIVE", 9, 0xFF2B0A0A, true);
@@ -556,52 +572,26 @@ public class MainActivity extends Activity {
         head.addView(go, new LinearLayout.LayoutParams(dp(54), dp(54)));
         card.addView(head);
 
-        if (r.expanded) card.addView(filesView(r));
+        if (r.b != null && r.b.open) card.addView(filesView(r));
         wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
         return wrap;
     }
 
-    private View filesView(Row r) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(16), 0, dp(16), dp(12));
-        View line = new View(this);
-        line.setBackgroundColor(SURFACE2);
-        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(-1, 2);
-        ll.bottomMargin = dp(8);
-        box.addView(line, ll);
-        if (r.loading) {
-            box.addView(text("Loading…", 12, SUB, false));
-        } else if (r.files == null || r.files.isEmpty()) {
-            box.addView(text("Folder is empty", 12, SUB, false));
-        } else {
-            for (String[] f : r.files) {
-                LinearLayout row = new LinearLayout(this);
-                row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setPadding(0, dp(5), 0, dp(5));
-                if (f[0].equals("M")) {
-                    row.addView(text("… and more", 12, SUB, false));
-                } else {
-                    boolean dir = f[0].equals("D");
-                    TextView mark = text(dir ? "▸" : "•", 12, dir ? ACCENT : SUB, false);
-                    mark.setWidth(dp(18));
-                    row.addView(mark);
-                    TextView nm = text(f[1], 13, TXT, false);
-                    nm.setSingleLine(true);
-                    nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-                    row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
-                    if (!dir) {
-                        long sz = 0;
-                        try { sz = Long.parseLong(f[2].trim()); } catch (Exception ignored) { }
-                        TextView z = text(humanSize(sz), 12, SUB, false);
-                        z.setPadding(dp(10), 0, 0, 0);
-                        row.addView(z);
-                    }
-                }
-                box.addView(row);
-            }
+    private Row storageRow() {
+        try {
+            StatFs sf = new StatFs(Environment.getDataDirectory().getPath());
+            long total = sf.getTotalBytes(), free = sf.getAvailableBytes();
+            Row r = new Row();
+            r.kind = Row.STORAGE;
+            r.freeBytes = free;
+            r.avail = humanSize(free);
+            r.total = humanSize(total);
+            r.text = humanSize(Math.max(0, total - free));
+            r.pct = total > 0 ? (int) ((total - free) * 100 / total) : 0;
+            return r;
+        } catch (Exception e) {
+            return null;
         }
-        return box;
     }
 
     private static String humanSize(long b) {
@@ -613,46 +603,216 @@ public class MainActivity extends Activity {
         return String.format(Locale.US, "%.1f %s", v, u[i]);
     }
 
-    /** Ambil isi folder project (maks 60 entri). Panggil dari background thread. */
-    private List<String[]> fetchFiles(String name) {
+    // ---------- file manager di dalam kartu project ----------
+    private String baseExpr(Browse b) {
+        return b.base == 0 ? "$DNA_DIR" : "$DNA_TMP";
+    }
+
+    /** Ekspresi shell menuju folder yang sedang dibuka. Variabel $d harus sudah di-set. */
+    private String dirExpr(Browse b) {
+        StringBuilder sb = new StringBuilder("\"" + baseExpr(b) + "/$d\"");
+        for (String seg : b.sub) sb.append('/').append(Runner.q(seg));
+        return sb.toString();
+    }
+
+    private String pathOf(Row r) {
+        Browse b = r.b;
+        StringBuilder sb = new StringBuilder();
+        if (b.base == 0) sb.append("/sdcard/DNA/");
+        else sb.append(runner != null && runner.isRoot() ? "/data/DNA/" : getFilesDir().getAbsolutePath() + "/DNA/");
+        sb.append(r.name);
+        for (String seg : b.sub) sb.append('/').append(seg);
+        return sb.toString();
+    }
+
+    /** Baca isi folder (maks 80 entri, folder dulu). Panggil dari background thread. */
+    private void loadDir(String name, Browse b) {
         String out = runner.capture("d=" + Runner.q(name) + "\n"
-                + "cd \"$DNA_DIR/$d\" 2>/dev/null || exit 0\n"
+                + "cd " + dirExpr(b) + " 2>/dev/null || exit 0\n"
                 + "n=0\n"
                 + "for f in *; do\n"
+                + "  [ -d \"$f\" ] || continue\n"
+                + "  n=$((n+1)); [ $n -le 80 ] || break\n"
+                + "  echo \"D|$f|$(ls -A \"$f\" 2>/dev/null | wc -l | tr -d ' ')\"\n"
+                + "done\n"
+                + "for f in *; do\n"
+                + "  [ -d \"$f\" ] && continue\n"
                 + "  [ -e \"$f\" ] || continue\n"
-                + "  n=$((n+1))\n"
-                + "  if [ $n -gt 60 ]; then echo \"M|more|0\"; break; fi\n"
-                + "  if [ -d \"$f\" ]; then echo \"D|$f|0\"; else echo \"F|$f|$(stat -c %s \"$f\" 2>/dev/null)\"; fi\n"
-                + "done\n");
+                + "  n=$((n+1)); [ $n -le 80 ] || break\n"
+                + "  echo \"F|$f|$(stat -c %s \"$f\" 2>/dev/null)\"\n"
+                + "done\n"
+                + "[ $n -gt 80 ] && echo \"M|more|0\"\n");
         List<String[]> res = new ArrayList<>();
         for (String line : out.split("\n")) {
             String[] p = line.split("\\|", 3);
             if (p.length == 3 && (p[0].equals("D") || p[0].equals("F") || p[0].equals("M"))) res.add(p);
         }
-        return res;
+        b.files = res;
     }
 
-    private void toggleProject(Row r) {
-        if (r.expanded) {
-            r.expanded = false;
-            expandedSet.remove(r.name);
-            homeAdapter.notifyDataSetChanged();
-            return;
-        }
-        r.expanded = true;
-        expandedSet.add(r.name);
-        if (fileCache.containsKey(r.name)) r.files = fileCache.get(r.name);
-        r.loading = true;
+    private void reloadDir(Row r) {
+        final Browse b = r.b;
+        b.loading = true;
         homeAdapter.notifyDataSetChanged();
         new Thread(() -> {
-            List<String[]> f = fetchFiles(r.name);
+            loadDir(r.name, b);
             ui.post(() -> {
-                fileCache.put(r.name, f);
-                r.files = f;
-                r.loading = false;
+                b.loading = false;
                 homeAdapter.notifyDataSetChanged();
             });
         }).start();
+    }
+
+    private void toggleProject(Row r) {
+        if (r.b == null) {
+            r.b = new Browse();
+            browse.put(r.name, r.b);
+        }
+        r.b.open = !r.b.open;
+        if (!r.b.open) {
+            homeAdapter.notifyDataSetChanged();
+            return;
+        }
+        reloadDir(r);
+    }
+
+    private TextView tab(String label, boolean on, Runnable click) {
+        TextView t = text(label, 12, on ? 0xFF2B0A0A : TXT, true);
+        t.setPadding(dp(14), dp(7), dp(14), dp(7));
+        t.setBackground(rect(on ? ACCENT : SURFACE2, 16));
+        t.setOnClickListener(v -> click.run());
+        return t;
+    }
+
+    private View filesView(Row r) {
+        final Browse b = r.b;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), 0, dp(8), dp(12));
+        box.setOnClickListener(v -> { });   // tap area kosong jangan menutup kartu
+
+        View line = new View(this);
+        line.setBackgroundColor(SURFACE2);
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(-1, 2);
+        ll.bottomMargin = dp(10);
+        box.addView(line, ll);
+
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.addView(tab("Project", b.base == 0, () -> switchBase(r, 0)));
+        if (r.hasUnpacked) {
+            LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(-2, -2);
+            tl.leftMargin = dp(8);
+            tabs.addView(tab("Unpacked (" + r.uCount + ")", b.base == 1, () -> switchBase(r, 1)), tl);
+        }
+        box.addView(tabs);
+
+        TextView path = text(pathOf(r), 11, SUB, false);
+        path.setTypeface(Typeface.MONOSPACE);
+        path.setSingleLine(true);
+        path.setEllipsize(TextUtils.TruncateAt.START);
+        path.setPadding(0, dp(10), dp(8), dp(4));
+        box.addView(path);
+
+        if (!b.sub.isEmpty()) {
+            LinearLayout up = new LinearLayout(this);
+            up.setGravity(Gravity.CENTER_VERTICAL);
+            up.setPadding(0, dp(8), 0, dp(8));
+            up.setBackground(ripple(0x00000000, 10));
+            TextView m = text("▴", 14, ACCENT, false);
+            m.setWidth(dp(20));
+            up.addView(m);
+            up.addView(text("..", 13, TXT, false));
+            up.setOnClickListener(v -> {
+                b.sub.remove(b.sub.size() - 1);
+                reloadDir(r);
+            });
+            box.addView(up);
+        }
+
+        if (b.loading) {
+            box.addView(text("Loading…", 12, SUB, false));
+        } else if (b.files.isEmpty()) {
+            TextView e = text("Folder is empty", 12, SUB, false);
+            e.setPadding(0, dp(8), 0, 0);
+            box.addView(e);
+        } else {
+            for (String[] f : b.files) box.addView(entryRow(r, f));
+        }
+        return box;
+    }
+
+    private void switchBase(Row r, int base) {
+        r.b.base = base;
+        r.b.sub.clear();
+        reloadDir(r);
+    }
+
+    private View entryRow(Row r, String[] f) {
+        final Browse b = r.b;
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        if (f[0].equals("M")) {
+            TextView t = text("… and more (showing first 80)", 12, SUB, false);
+            t.setPadding(0, dp(8), 0, dp(4));
+            row.addView(t);
+            return row;
+        }
+        final boolean dir = f[0].equals("D");
+        row.setPadding(0, dp(2), 0, dp(2));
+        row.setBackground(ripple(0x00000000, 10));
+        TextView mark = text(dir ? "▸" : "•", 14, dir ? ACCENT : SUB, false);
+        mark.setWidth(dp(20));
+        row.addView(mark);
+        TextView nm = text(f[1], 13, TXT, false);
+        nm.setSingleLine(true);
+        nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
+        String meta;
+        if (dir) {
+            meta = f[2].trim() + " items";
+        } else {
+            long sz = 0;
+            try { sz = Long.parseLong(f[2].trim()); } catch (Exception ignored) { }
+            meta = humanSize(sz);
+        }
+        TextView mt = text(meta, 12, SUB, false);
+        mt.setPadding(dp(8), 0, 0, 0);
+        row.addView(mt);
+        ImageView del = new ImageView(this);
+        del.setImageResource(R.drawable.ic_delete);
+        del.setPadding(dp(10), dp(10), dp(10), dp(10));
+        del.setOnClickListener(v -> confirmDelete(r, f[1], dir));
+        row.addView(del, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        if (dir) {
+            row.setOnClickListener(v -> {
+                b.sub.add(f[1]);
+                reloadDir(r);
+            });
+        } else {
+            row.setOnClickListener(v -> { });
+        }
+        return row;
+    }
+
+    private void confirmDelete(Row r, String name, boolean dir) {
+        if (name.isEmpty() || name.equals(".") || name.equals("..") || name.contains("/")) return;
+        final Browse b = r.b;
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Delete " + (dir ? "folder" : "file") + "?")
+                .setMessage(pathOf(r) + "/" + name + "\n\nThis cannot be undone.")
+                .setPositiveButton("Delete", (x, w) -> new Thread(() -> {
+                    runner.capture("d=" + Runner.q(r.name) + "\nrm -rf " + dirExpr(b) + "/" + Runner.q(name));
+                    loadDir(r.name, b);
+                    ui.post(() -> {
+                        homeAdapter.notifyDataSetChanged();
+                        reloadHome();
+                    });
+                }).start())
+                .setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ERR);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
     }
 
     private void reloadHome() {
@@ -660,33 +820,35 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             String out = runner.capture(LOAD);
             List<Row> projects = new ArrayList<>();
-            Row storage = null;
+            Row storage = storageRow();
             for (String line : out.split("\n")) {
                 String[] p = line.split("\\|", -1);
                 try {
-                    if (p[0].equals("P") && p.length >= 5) {
+                    if (p[0].equals("P") && p.length >= 7) {
                         Row r = new Row();
                         r.kind = Row.PROJECT;
                         r.name = p[1];
                         r.size = p[2].trim();
                         r.count = Integer.parseInt(p[3].trim());
                         r.mtime = p[4].trim().isEmpty() ? 0 : Long.parseLong(p[4].trim());
+                        r.hasUnpacked = "1".equals(p[5].trim());
+                        r.uCount = p[6].trim().isEmpty() ? 0 : Integer.parseInt(p[6].trim());
                         projects.add(r);
-                    } else if (p[0].equals("S") && p.length >= 4) {
-                        storage = new Row();
-                        storage.kind = Row.STORAGE;
-                        storage.avail = p[1];
-                        storage.total = p[2];
-                        storage.pct = Integer.parseInt(p[3].replace("%", "").trim());
                     }
                 } catch (NumberFormatException ignored) { }
             }
             for (Row r : projects) {
-                if (expandedSet.contains(r.name)) {
-                    r.expanded = true;
-                    r.files = fetchFiles(r.name);
-                    fileCache.put(r.name, r.files);
+                Browse b = browse.get(r.name);
+                if (b == null) {
+                    b = new Browse();
+                    browse.put(r.name, b);
                 }
+                if (!r.hasUnpacked && b.base == 1) {
+                    b.base = 0;
+                    b.sub.clear();
+                }
+                r.b = b;
+                if (b.open) loadDir(r.name, b);
             }
             Collections.sort(projects, new Comparator<Row>() {
                 @Override public int compare(Row a, Row b) { return Long.compare(b.mtime, a.mtime); }
