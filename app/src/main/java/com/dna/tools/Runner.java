@@ -38,7 +38,7 @@ final class Runner {
         return root;
     }
 
-    private void awaitRoot() {
+    void awaitRoot() {
         try { rootCheck.join(); } catch (InterruptedException ignored) { }
     }
 
@@ -86,7 +86,7 @@ final class Runner {
             }
         }
         s.append(norm(body)).append('\n');
-        File f = File.createTempFile("t", ".sh", cache);
+        File f = File.createTempFile("dna_", ".sh", cache);
         FileOutputStream o = new FileOutputStream(f);
         o.write(s.toString().getBytes("UTF-8"));
         o.close();
