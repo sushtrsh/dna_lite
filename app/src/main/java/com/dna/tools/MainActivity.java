@@ -26,6 +26,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -41,28 +42,59 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class MainActivity extends Activity {
-    private static final int BG = 0xFF0F1115, SURFACE = 0xFF181B21, SURFACE2 = 0xFF20242C;
-    private static final int ACCENT = 0xFF5EEAD4, TXT = 0xFFE6E8EB, SUB = 0xFF8B93A1;
+    private static final int BG = 0xFF0C111E, SURFACE = 0xFF141B2D, SURFACE2 = 0xFF1B2438;
+    private static final int ACCENT = 0xFFFF8282, TXT = 0xFFE9ECF3, SUB = 0xFF8A93A8;
     private static final int OK = 0xFF66BB6A, ERR = 0xFFEF5350;
+    private static final String LOAD =
+            "for d in \"$DNA_DIR\"/DNA_*/; do\n"
+            + "  [ -d \"$d\" ] || continue\n"
+            + "  n=$(basename \"$d\")\n"
+            + "  s=$(du -sh \"$d\" 2>/dev/null | cut -f1)\n"
+            + "  c=$(ls -1 \"$d\" 2>/dev/null | wc -l)\n"
+            + "  m=$(stat -c %Y \"$d\" 2>/dev/null)\n"
+            + "  echo \"P|$n|$s|$c|$m\"\n"
+            + "done\n"
+            + "df -h /sdcard 2>/dev/null | tail -1 | awk '{print \"S|\"$4\"|\"$2\"|\"$5}'\n";
 
     private interface Getter { String get(); }
 
     private static final class Screen {
         String title;
         View view;
+        boolean home;
+        Runnable onShow;
+    }
+
+    private static final class Row {
+        static final int STORAGE = 0, SECTION = 1, PROJECT = 2, EMPTY = 3, NODE = 4;
+        int kind;
+        String name = "", size = "", avail = "", total = "", text = "";
+        int count, pct;
+        long mtime;
+        Menu.Node node;
     }
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ArrayList<Screen> stack = new ArrayList<>();
     private Runner runner;
     private TextView title, back, projChip, rootChip;
+    private View logoBox, spacer, plus, chipsRow;
     private FrameLayout content;
+    private final List<Row> rows = new ArrayList<>();
+    private BaseAdapter homeAdapter;
+    private List<Menu.Node> toolNodes = new ArrayList<>();
+    private Menu.Node unzipNode;
     private volatile Runner.Started running;
 
     @Override
@@ -72,31 +104,55 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
 
-        LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.VERTICAL);
-        top.setPadding(dp(20), dp(16), dp(20), dp(10));
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(16), dp(10), dp(12), dp(10));
         back = text("←", 26, TXT, true);
-        back.setPadding(0, 0, dp(16), 0);
+        back.setPadding(0, 0, dp(14), 0);
         back.setVisibility(View.GONE);
         back.setOnClickListener(v -> onBackPressed());
-        title = text("DNA Lite", 26, TXT, true);
+        LinearLayout logo = new LinearLayout(this);
+        logo.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView mark = new ImageView(this);
+        mark.setImageResource(R.drawable.ic_logo);
+        TextView na = text("na", 30, ACCENT, true);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(-2, -2);
+        nlp.leftMargin = -dp(3);
+        logo.addView(mark);
+        logo.addView(na, nlp);
+        logoBox = logo;
+        title = text("", 20, TXT, true);
+        title.setSingleLine(true);
+        spacer = new View(this);
+        ImageView pl = new ImageView(this);
+        pl.setImageResource(R.drawable.ic_plus);
+        pl.setPadding(dp(8), dp(8), dp(8), dp(8));
+        pl.setBackground(ripple(0x00000000, 22));
+        pl.setOnClickListener(v -> newProjectDialog());
+        plus = pl;
         row.addView(back);
-        row.addView(title);
+        row.addView(logoBox);
+        row.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        row.addView(plus, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        View divider = new View(this);
+        divider.setBackgroundColor(Color.WHITE);
+
         LinearLayout chips = new LinearLayout(this);
-        chips.setPadding(0, dp(12), 0, 0);
+        chips.setPadding(dp(16), dp(12), dp(16), dp(0));
         projChip = chip();
         rootChip = chip();
         chips.addView(projChip);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.leftMargin = dp(8);
         chips.addView(rootChip, lp);
-        top.addView(row);
-        top.addView(chips);
+        chipsRow = chips;
 
         content = new FrameLayout(this);
-        root.addView(top, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(divider, new LinearLayout.LayoutParams(-1, Math.max(2, (int) (1.5f * getResources().getDisplayMetrics().density))));
+        root.addView(chipsRow, new LinearLayout.LayoutParams(-1, -2));
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(root);
         updateHeader();
@@ -111,14 +167,27 @@ public class MainActivity extends Activity {
             try {
                 Toolkit.install(this);
                 runner = new Runner(this);
-                List<Menu.Node> home = new ArrayList<>(Menu.parse(asset("menu/home.xml")));
-                home.addAll(Menu.parse(asset("menu/more.xml")));
+                List<Menu.Node> homeNodes = new ArrayList<>(Menu.parse(asset("menu/home.xml")));
+                List<Menu.Node> flat = new ArrayList<>();
+                Menu.flatten(homeNodes, flat);
+                for (Menu.Node n : flat) {
+                    if (n.type == Menu.ACTION && n.title.equals("Unzip ROM")) unzipNode = n;
+                }
+                toolNodes = new ArrayList<>(Menu.parse(asset("menu/more.xml")));
+                for (Menu.Node n : flat) if (n.type == Menu.TEXT) toolNodes.add(n);
                 ui.post(() -> {
                     content.removeAllViews();
-                    push("DNA Lite", list(home));
+                    View hv = homeView();
+                    push("DNA", hv);
+                    stack.get(0).home = true;
+                    stack.get(0).onShow = this::reloadHome;
+                    reloadHome();
                 });
                 runner.awaitRoot();
-                ui.post(this::updateHeader);
+                ui.post(() -> {
+                    updateHeader();
+                    if (!stack.isEmpty() && stack.get(0).home) reloadHome();
+                });
             } catch (Exception e) {
                 ui.post(() -> message("Error: " + e));
             }
@@ -166,7 +235,7 @@ public class MainActivity extends Activity {
         b.setText(s);
         b.setAllCaps(false);
         b.setTextSize(15);
-        b.setTextColor(color == ACCENT ? 0xFF062925 : Color.WHITE);
+        b.setTextColor(color == ACCENT ? 0xFF2B0A0A : Color.WHITE);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setBackground(ripple(color, 16));
         return b;
@@ -229,15 +298,27 @@ public class MainActivity extends Activity {
         v.setAlpha(0f);
         v.animate().alpha(1f).setDuration(160).start();
         updateHeader();
+        Runnable r = stack.get(stack.size() - 1).onShow;
+        if (r != null) r.run();
     }
 
     private void updateHeader() {
+        boolean home = stack.size() <= 1;
         if (!stack.isEmpty()) title.setText(stack.get(stack.size() - 1).title);
-        back.setVisibility(stack.size() > 1 ? View.VISIBLE : View.GONE);
-        projChip.setText("Project: " + project());
+        back.setVisibility(home ? View.GONE : View.VISIBLE);
+        logoBox.setVisibility(home ? View.VISIBLE : View.GONE);
+        spacer.setVisibility(home ? View.VISIBLE : View.GONE);
+        title.setVisibility(home ? View.GONE : View.VISIBLE);
+        plus.setVisibility(home ? View.VISIBLE : View.GONE);
+        chipsRow.setVisibility(home ? View.GONE : View.VISIBLE);
+        projChip.setText("Project: " + display(project()));
         boolean r = runner != null && runner.isRoot();
         rootChip.setText(r ? "● Root" : "● No root");
         rootChip.setTextColor(r ? OK : ERR);
+    }
+
+    private static String display(String name) {
+        return name.startsWith("DNA_") ? name.substring(4) : name;
     }
 
     @Override
@@ -274,43 +355,297 @@ public class MainActivity extends Activity {
             }
 
             @Override public View getView(int i, View cv, ViewGroup parent) {
-                Menu.Node n = items.get(i);
-                if (n.type == Menu.GROUP) {
-                    TextView h = text(n.title.toUpperCase(), 12, ACCENT, true);
-                    h.setLetterSpacing(0.08f);
-                    h.setPadding(dp(24), dp(22), dp(24), dp(6));
-                    return h;
-                }
-                FrameLayout wrap = new FrameLayout(MainActivity.this);
-                wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
-                LinearLayout card = new LinearLayout(MainActivity.this);
-                card.setGravity(Gravity.CENTER_VERTICAL);
-                card.setPadding(dp(14), dp(14), dp(14), dp(14));
-                card.setDuplicateParentStateEnabled(true);
-                if (n.type == Menu.TEXT) {
-                    card.setBackground(rect(SURFACE, 16));
-                    card.addView(text(n.title.trim(), 12, SUB, false));
-                } else {
-                    card.setBackground(ripple(SURFACE, 16));
-                    String ch = n.title.isEmpty() ? "•" : n.title.substring(0, 1).toUpperCase();
-                    TextView badge = text(ch, 16, ACCENT, true);
-                    badge.setGravity(Gravity.CENTER);
-                    badge.setBackground(rect(0x225EEAD4, 14));
-                    card.addView(badge, new LinearLayout.LayoutParams(dp(42), dp(42)));
-                    LinearLayout col = new LinearLayout(MainActivity.this);
-                    col.setOrientation(LinearLayout.VERTICAL);
-                    col.setPadding(dp(14), 0, dp(8), 0);
-                    col.addView(text(n.title, 16, TXT, false));
-                    if (!n.desc.isEmpty()) col.addView(text(n.desc, 12, SUB, false));
-                    card.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
-                    if (n.type == Menu.PAGE) card.addView(text("›", 22, SUB, false));
-                }
-                wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
-                return wrap;
+                return nodeView(items.get(i));
             }
         });
         lv.setOnItemClickListener((a, v, pos, id) -> onNode(items.get(pos)));
         return lv;
+    }
+
+    private View nodeView(Menu.Node n) {
+        if (n.type == Menu.GROUP) {
+            TextView h = text(n.title.toUpperCase(), 12, ACCENT, true);
+            h.setLetterSpacing(0.08f);
+            h.setPadding(dp(24), dp(22), dp(24), dp(6));
+            return h;
+        }
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
+        LinearLayout card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        card.setDuplicateParentStateEnabled(true);
+        if (n.type == Menu.TEXT) {
+            card.setBackground(rect(SURFACE, 16));
+            card.addView(text(n.title.trim(), 12, SUB, false));
+        } else {
+            card.setBackground(ripple(SURFACE, 16));
+            String ch = n.title.isEmpty() ? "•" : n.title.substring(0, 1).toUpperCase();
+            TextView badge = text(ch, 16, ACCENT, true);
+            badge.setGravity(Gravity.CENTER);
+            badge.setBackground(rect(0x22FF8282, 14));
+            card.addView(badge, new LinearLayout.LayoutParams(dp(42), dp(42)));
+            LinearLayout col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            col.setPadding(dp(14), 0, dp(8), 0);
+            col.addView(text(n.title, 16, TXT, false));
+            if (!n.desc.isEmpty()) col.addView(text(n.desc, 12, SUB, false));
+            card.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+            if (n.type == Menu.PAGE) card.addView(text("›", 22, SUB, false));
+        }
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
+    // ---------- home: daftar folder project ----------
+    private View homeView() {
+        ListView lv = new ListView(this);
+        lv.setDivider(null);
+        lv.setDividerHeight(0);
+        lv.setSelector(new ColorDrawable(Color.TRANSPARENT));
+        lv.setClipToPadding(false);
+        lv.setPadding(0, dp(6), 0, dp(24));
+        homeAdapter = new BaseAdapter() {
+            @Override public int getCount() { return rows.size(); }
+            @Override public Object getItem(int i) { return rows.get(i); }
+            @Override public long getItemId(int i) { return i; }
+            @Override public boolean isEnabled(int i) {
+                Row r = rows.get(i);
+                if (r.kind == Row.PROJECT) return true;
+                return r.kind == Row.NODE && (r.node.type == Menu.ACTION || r.node.type == Menu.PAGE);
+            }
+            @Override public View getView(int i, View cv, ViewGroup parent) { return rowView(rows.get(i)); }
+        };
+        lv.setAdapter(homeAdapter);
+        lv.setOnItemClickListener((a, v, pos, id) -> {
+            Row r = rows.get(pos);
+            if (r.kind == Row.PROJECT) openProject(r.name);
+            else if (r.kind == Row.NODE) onNode(r.node);
+        });
+        lv.setOnItemLongClickListener((a, v, pos, id) -> {
+            Row r = rows.get(pos);
+            if (r.kind != Row.PROJECT) return false;
+            deleteDialog(r.name);
+            return true;
+        });
+        return lv;
+    }
+
+    private View rowView(Row r) {
+        switch (r.kind) {
+            case Row.NODE:
+                return nodeView(r.node);
+            case Row.SECTION: {
+                TextView h = text(r.text.toUpperCase(), 12, ACCENT, true);
+                h.setLetterSpacing(0.08f);
+                h.setPadding(dp(24), dp(20), dp(24), dp(6));
+                return h;
+            }
+            case Row.EMPTY: {
+                TextView t = text(r.text, 14, SUB, false);
+                t.setGravity(Gravity.CENTER);
+                t.setPadding(dp(24), dp(28), dp(24), dp(28));
+                return t;
+            }
+            case Row.STORAGE:
+                return storageCard(r);
+            default:
+                return projectCard(r);
+        }
+    }
+
+    private View storageCard(Row r) {
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(rect(SURFACE, 18));
+        card.setPadding(dp(18), dp(16), dp(18), dp(16));
+        card.addView(text("INTERNAL STORAGE", 11, SUB, true));
+        TextView big = text(r.avail + " free", 22, TXT, true);
+        big.setPadding(0, dp(4), 0, dp(10));
+        card.addView(big);
+        LinearLayout bar = new LinearLayout(this);
+        bar.setBackground(rect(SURFACE2, 4));
+        View fill = new View(this);
+        fill.setBackground(rect(r.pct > 90 ? ERR : ACCENT, 4));
+        int pct = Math.max(2, Math.min(100, r.pct));
+        bar.addView(fill, new LinearLayout.LayoutParams(0, dp(8), pct));
+        bar.addView(new View(this), new LinearLayout.LayoutParams(0, dp(8), 100 - pct));
+        card.addView(bar, new LinearLayout.LayoutParams(-1, dp(8)));
+        boolean root = runner != null && runner.isRoot();
+        TextView foot = text(r.pct + "% of " + r.total + " used  •  " + (root ? "Root ✓" : "No root"), 12, SUB, false);
+        foot.setPadding(0, dp(10), 0, 0);
+        card.addView(foot);
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
+    private View projectCard(Row r) {
+        boolean active = r.name.equals(project());
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
+        LinearLayout card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        card.setDuplicateParentStateEnabled(true);
+        card.setBackground(ripple(SURFACE, 18));
+        FrameLayout badge = new FrameLayout(this);
+        badge.setBackground(rect(0x22FF8282, 14));
+        ImageView ic = new ImageView(this);
+        ic.setImageResource(R.drawable.ic_folder);
+        badge.addView(ic, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+        card.addView(badge, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(14), 0, dp(8), 0);
+        col.addView(text(display(r.name), 16, TXT, true));
+        String date = r.mtime > 0
+                ? new SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(new Date(r.mtime * 1000L)) : "";
+        String meta = (r.size.isEmpty() ? "–" : r.size) + "  •  " + r.count + " items" + (date.isEmpty() ? "" : "  •  " + date);
+        col.addView(text(meta, 12, SUB, false));
+        card.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+        if (active) {
+            TextView t = text("ACTIVE", 10, 0xFF2B0A0A, true);
+            t.setBackground(rect(ACCENT, 10));
+            t.setPadding(dp(8), dp(3), dp(8), dp(3));
+            card.addView(t);
+        } else {
+            card.addView(text("›", 22, SUB, false));
+        }
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
+    private void reloadHome() {
+        if (runner == null) return;
+        new Thread(() -> {
+            String out = runner.capture(LOAD);
+            List<Row> projects = new ArrayList<>();
+            Row storage = null;
+            for (String line : out.split("\n")) {
+                String[] p = line.split("\\|", -1);
+                try {
+                    if (p[0].equals("P") && p.length >= 5) {
+                        Row r = new Row();
+                        r.kind = Row.PROJECT;
+                        r.name = p[1];
+                        r.size = p[2].trim();
+                        r.count = Integer.parseInt(p[3].trim());
+                        r.mtime = p[4].trim().isEmpty() ? 0 : Long.parseLong(p[4].trim());
+                        projects.add(r);
+                    } else if (p[0].equals("S") && p.length >= 4) {
+                        storage = new Row();
+                        storage.kind = Row.STORAGE;
+                        storage.avail = p[1];
+                        storage.total = p[2];
+                        storage.pct = Integer.parseInt(p[3].replace("%", "").trim());
+                    }
+                } catch (NumberFormatException ignored) { }
+            }
+            Collections.sort(projects, new Comparator<Row>() {
+                @Override public int compare(Row a, Row b) { return Long.compare(b.mtime, a.mtime); }
+            });
+            List<Row> res = new ArrayList<>();
+            if (storage != null) res.add(storage);
+            Row sec = new Row();
+            sec.kind = Row.SECTION;
+            sec.text = "Projects (" + projects.size() + ")";
+            res.add(sec);
+            if (projects.isEmpty()) {
+                Row e = new Row();
+                e.kind = Row.EMPTY;
+                e.text = "No projects yet.\nTap + to create your first one.";
+                res.add(e);
+            }
+            res.addAll(projects);
+            List<Menu.Node> flat = new ArrayList<>();
+            Menu.flatten(toolNodes, flat);
+            for (Menu.Node n : flat) {
+                Row r = new Row();
+                r.kind = Row.NODE;
+                r.node = n;
+                res.add(r);
+            }
+            ui.post(() -> {
+                rows.clear();
+                rows.addAll(res);
+                if (homeAdapter != null) homeAdapter.notifyDataSetChanged();
+            });
+        }).start();
+    }
+
+    private void openProject(String name) {
+        new Thread(() -> {
+            runner.capture("echo " + Runner.q(name) + " > \"$TMPDIR/DNA.ini\"");
+            try {
+                List<Menu.Node> nodes = new ArrayList<>();
+                Menu.Node path = new Menu.Node(Menu.TEXT);
+                path.title = "/sdcard/DNA/" + name;
+                nodes.add(path);
+                if (unzipNode != null) nodes.add(unzipNode);
+                nodes.addAll(Menu.parse(asset("menu/dna.xml")));
+                ui.post(() -> push(display(name), list(nodes)));
+            } catch (Exception e) {
+                ui.post(() -> toast("Error: " + e));
+            }
+        }).start();
+    }
+
+    private void newProjectDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), dp(8));
+        EditText et = input();
+        et.setHint("Project name (a-z, 0-9, _ -)");
+        et.setSingleLine(true);
+        box.addView(et, new LinearLayout.LayoutParams(-1, -2));
+        TextView hint = text("Folder will be created in /sdcard/DNA as DNA_<name>", 12, SUB, false);
+        hint.setPadding(0, dp(8), 0, 0);
+        box.addView(hint);
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("New project").setView(box)
+                .setPositiveButton("Create", null).setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ACCENT);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String name = et.getText().toString().trim().replaceAll("[^A-Za-z0-9._-]", "_");
+            if (name.isEmpty()) {
+                toast("Enter a project name");
+                return;
+            }
+            d.dismiss();
+            createProject(name);
+        });
+    }
+
+    private void createProject(String name) {
+        new Thread(() -> {
+            runner.capture("export T=" + Runner.q(name) + "\nsh samples/project.sh XJ");
+            String active = project();
+            ui.post(() -> {
+                reloadHome();
+                openProject(active);
+            });
+        }).start();
+    }
+
+    private void deleteDialog(String name) {
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Delete project?")
+                .setMessage(display(name) + "\n\nAll files in this project will be permanently deleted.")
+                .setPositiveButton("Delete", (x, w) -> {
+                    Map<String, String> env = new LinkedHashMap<>();
+                    env.put("TSS", name);
+                    run("Delete " + display(name), "sh samples/project.sh SC", env);
+                })
+                .setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ERR);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
     }
 
     private void onNode(Menu.Node n) {
@@ -576,7 +911,7 @@ public class MainActivity extends Activity {
             status.setText(ok ? "✓ Done" : "✕ Failed (exit " + exit + ")");
             status.setTextColor(ok ? OK : ERR);
             btn.setText("Close");
-            btn.setTextColor(0xFF062925);
+            btn.setTextColor(0xFF2B0A0A);
             btn.setBackground(ripple(ACCENT, 16));
         }
     }

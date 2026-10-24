@@ -66,7 +66,7 @@ final class Runner {
         s.append("[ -d \"$DNA_DIR\" ] || mkdir -p \"$DNA_DIR\"\n");
         s.append("if [ \"$ROOT_PERMISSION\" = true ]; then export DNA_TMP=/data/DNA; else export DNA_TMP=\"$START_DIR/DNA\"; fi\n");
         s.append("if [ -f \"$TMPDIR/DNA.ini\" ]; then\n");
-        s.append("  project=$(cat \"$TMPDIR/DNA.ini\")\n");
+        s.append("  project=$(cat \"$TMPDIR/DNA.ini\"); export project\n");
         s.append("  export DNA_PRO=\"$DNA_DIR/$project\"\n");
         s.append("  export DNA_DRO=\"$DNA_TMP/$project\"\n");
         s.append("fi\n");
