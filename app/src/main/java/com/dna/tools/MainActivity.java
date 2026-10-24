@@ -1111,6 +1111,7 @@ public class MainActivity extends Activity {
 
         // bar seleksi selalu dibuat (disembunyikan saat tidak aktif) supaya bisa dianimasikan
         final boolean canUnpack = b.abs == null && b.base == 0 && b.sub.isEmpty();
+        final boolean canRepack = b.abs == null && b.base == 1 && b.sub.isEmpty();
         b.refs.clear();
         b.selP = b.selMode ? 1f : 0f;
         b.unpackChip = null;
@@ -1132,6 +1133,9 @@ public class MainActivity extends Activity {
         if (canUnpack) {
             labels.add("Unpack");
             clicks.add(() -> multiUnpack(r));
+        } else if (canRepack) {
+            labels.add("Repack");
+            clicks.add(() -> multiRepack(r));
         }
         labels.add("Copy");
         clicks.add(() -> openExplorerMulti(selectedPaths(r), false));
@@ -1148,7 +1152,7 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-2, -2);
             al.rightMargin = dp(8);
             TextView chipV = tab(labels.get(i), labels.get(i).equals("Delete"), clicks.get(i));
-            if (labels.get(i).equals("Unpack")) b.unpackChip = chipV;
+            if (labels.get(i).equals("Unpack") || labels.get(i).equals("Repack")) b.unpackChip = chipV;
             acts.addView(chipV, al);
         }
         hs.addView(acts);
@@ -1170,7 +1174,7 @@ public class MainActivity extends Activity {
         } else {
             for (String[] f : b.files) box.addView(entryRow(r, f));
         }
-        if (b.unpackChip != null) b.unpackChip.setAlpha(countUnpackable(b) > 0 ? 1f : 0.4f);
+        if (b.unpackChip != null) b.unpackChip.setAlpha(countActionable(b) > 0 ? 1f : 0.4f);
         return box;
     }
 
@@ -1244,7 +1248,7 @@ public class MainActivity extends Activity {
             }
         }
         if (b.selCnt != null) b.selCnt.setText(b.sel.size() + " selected");
-        if (b.unpackChip != null) b.unpackChip.setAlpha(countUnpackable(b) > 0 ? 1f : 0.4f);
+        if (b.unpackChip != null) b.unpackChip.setAlpha(countActionable(b) > 0 ? 1f : 0.4f);
     }
 
     /** Masuk/keluar mode seleksi: bar turun/naik, kolom centang & tombol aksi bergeser mulus. */
@@ -1286,6 +1290,57 @@ public class MainActivity extends Activity {
         });
         b.selAnim = a;
         a.start();
+    }
+
+    /** Folder partisi hasil unpack (tab Unpacked) yang bisa di-repack; "config" bukan partisi. */
+    private int countRepackable(Browse b) {
+        int c = 0;
+        for (String[] f : b.files) if (f[0].equals("D") && b.sel.contains(f[1]) && !f[1].equals("config")) c++;
+        return c;
+    }
+
+    private int countActionable(Browse b) {
+        return b.base == 1 ? countRepackable(b) : countUnpackable(b);
+    }
+
+    private void multiRepack(Row r) {
+        final Browse b = r.b;
+        List<String> dirs = new ArrayList<>();
+        for (String[] f : b.files)
+            if (f[0].equals("D") && b.sel.contains(f[1]) && !f[1].equals("config") && !f[1].contains(",")) dirs.add(f[1]);
+        if (dirs.isEmpty()) {
+            toast("Select partition folders to repack");
+            return;
+        }
+        repackParts(r.name, dirs);
+    }
+
+    /** Buka dialog "Repack single img partition" dengan folder partisi sudah terisi (tanpa picker). */
+    private void repackParts(String project, List<String> dirs) {
+        final String joined = TextUtils.join(",", dirs);
+        new Thread(() -> {
+            runner.capture("echo " + Runner.q(project) + " > \"$TMPDIR/DNA.ini\"");
+            Menu.Node found = null;
+            try {
+                List<Menu.Node> all = new ArrayList<>();
+                Menu.flatten(Menu.parse(asset("menu/dna.xml")), all);
+                for (Menu.Node x : all)
+                    if (x.type == Menu.ACTION && "Repack single img partition".equals(x.title)) { found = x; break; }
+            } catch (Exception ignored) { }
+            final Menu.Node node = found;
+            if (node != null) {
+                for (java.util.Iterator<Menu.Param> it = node.params.iterator(); it.hasNext(); )
+                    if (it.next().name.equals("IMG_DIR")) it.remove();
+                node.desc = dirs.size() == 1 ? "Partition: " + dirs.get(0) : dirs.size() + " partitions: " + TextUtils.join(", ", dirs);
+            }
+            final Map<String, String> fixed = new LinkedHashMap<>();
+            fixed.put("IMG_DIR", joined);
+            ui.post(() -> {
+                updateHeader();
+                if (node == null) toast("Repack menu not found");
+                else paramDialog(node, fixed);
+            });
+        }).start();
     }
 
     private static boolean isSuperImg(String n) {
@@ -1876,6 +1931,12 @@ public class MainActivity extends Activity {
                     sup ? "Extract partitions from super.img" : "Extract this " + uk.toUpperCase(Locale.ROOT) + " into the project", () -> {
                 d.dismiss();
                 quickUnpack(r.name, name, uk);
+            });
+        }
+        if (dir && r.b != null && r.b.abs == null && r.b.base == 1 && r.b.sub.isEmpty() && !name.equals("config")) {
+            addAction(box, R.drawable.ic_folder, "Repack", "Pack this partition back into an IMG", () -> {
+                d.dismiss();
+                repackParts(r.name, Collections.singletonList(name));
             });
         }
         addAction(box, R.drawable.ic_edit, "Rename", "Change the " + (dir ? "folder" : "file") + " name", () -> {
