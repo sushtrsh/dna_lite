@@ -91,13 +91,15 @@ public class MainActivity extends Activity {
         Runnable onShow;
         EditorView editor;
         Explorer explorer;
+        boolean plain;   // layar tanpa chip Project/Root (explorer, console salin/pindah)
     }
 
     private static final class Row {
-        static final int STORAGE = 0, SECTION = 1, PROJECT = 2, EMPTY = 3, NODE = 4, PIN = 5, ADD = 6;
+        static final int STORAGE = 0, SECTION = 1, PROJECT = 2, EMPTY = 3, NODE = 4, PIN = 5, ADD = 6, DISKS = 7;
         int kind;
         String name = "", size = "", avail = "", total = "", text = "", title = "";
         boolean missing;
+        final List<Row> disks = new ArrayList<>();
         int count, pct;
         long mtime;
         Menu.Node node;
@@ -392,7 +394,7 @@ public class MainActivity extends Activity {
         spacer.setVisibility(home ? View.VISIBLE : View.GONE);
         title.setVisibility(home ? View.GONE : View.VISIBLE);
         plus.setVisibility(home ? View.VISIBLE : View.GONE);
-        boolean exTop = !stack.isEmpty() && stack.get(stack.size() - 1).explorer != null;
+        boolean exTop = !stack.isEmpty() && stack.get(stack.size() - 1).plain;
         chipsRow.setVisibility(home || exTop ? View.GONE : View.VISIBLE);
         projChip.setText("Project: " + display(project()));
         boolean r = runner != null && runner.isRoot();
@@ -560,8 +562,8 @@ public class MainActivity extends Activity {
                 t.setPadding(dp(24), dp(28), dp(24), dp(28));
                 return t;
             }
-            case Row.STORAGE:
-                return storageCard(r);
+            case Row.DISKS:
+                return disksView(r);
             case Row.ADD:
                 return addCard();
             default:
@@ -569,42 +571,83 @@ public class MainActivity extends Activity {
         }
     }
 
-    private View storageCard(Row r) {
-        FrameLayout wrap = new FrameLayout(this);
-        wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
+    /** Internal + SD/USB: dua kartu per baris (kiri-kanan). Kartu tunggal memenuhi lebar. */
+    private View disksView(Row r) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(14), dp(4), dp(14), dp(4));
+        int n = r.disks.size();
+        for (int i = 0; i < n; i += 2) {
+            LinearLayout line = new LinearLayout(this);
+            LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(-1, -2);
+            if (i > 0) ll.topMargin = dp(10);
+            for (int j = i; j < Math.min(n, i + 2); j++) {
+                LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, -1, 1f);
+                if (n > 1) {
+                    if (j % 2 == 0) cp.rightMargin = dp(5);
+                    else cp.leftMargin = dp(5);
+                }
+                line.addView(diskCard(r.disks.get(j)), cp);
+            }
+            if (n > 1 && n - i == 1) {
+                LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(0, 1, 1f);
+                sl.leftMargin = dp(5);
+                line.addView(new View(this), sl);
+            }
+            col.addView(line, ll);
+        }
+        return col;
+    }
+
+    private View diskCard(Row r) {
+        final boolean ext = !r.name.isEmpty();
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(rect(SURFACE, 18));
-        card.setPadding(dp(18), dp(16), dp(18), dp(16));
-        final boolean ext = !r.name.isEmpty();
-        card.addView(text(r.title, 11, SUB, true));
-        TextView big = text(r.avail + " available", 22, TXT, true);
-        big.setPadding(0, dp(4), 0, dp(10));
-        card.addView(big);
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+
+        TextView ttl = text(r.title, 11, SUB, true);
+        ttl.setSingleLine(true);
+        ttl.setEllipsize(TextUtils.TruncateAt.END);
+        card.addView(ttl);
+
+        LinearLayout free = new LinearLayout(this);
+        free.setPadding(0, dp(4), 0, dp(10));
+        free.addView(text(r.avail, 20, TXT, true));
+        free.addView(text(" free", 12, SUB, false));
+        card.addView(free);
+
         LinearLayout bar = new LinearLayout(this);
         bar.setBackground(rect(SURFACE2, 4));
         View fill = new View(this);
         fill.setBackground(rect(!ext && r.freeBytes < 5L * 1024 * 1024 * 1024 ? ERR : ACCENT, 4));
         int pct = Math.max(2, Math.min(100, r.pct));
-        bar.addView(fill, new LinearLayout.LayoutParams(0, dp(8), pct));
-        bar.addView(new View(this), new LinearLayout.LayoutParams(0, dp(8), 100 - pct));
-        card.addView(bar, new LinearLayout.LayoutParams(-1, dp(8)));
-        boolean root = runner != null && runner.isRoot();
-        TextView foot = text(r.text + " of " + r.total + " used  •  " + (ext ? r.name : (root ? "Root ✓" : "No root")), 12, SUB, false);
+        bar.addView(fill, new LinearLayout.LayoutParams(0, dp(6), pct));
+        bar.addView(new View(this), new LinearLayout.LayoutParams(0, dp(6), 100 - pct));
+        card.addView(bar, new LinearLayout.LayoutParams(-1, dp(6)));
+
+        TextView foot = text(r.text + " / " + r.total + " used", 11, SUB, false);
         foot.setPadding(0, dp(10), 0, 0);
         card.addView(foot);
-        if (!ext && r.freeBytes < 10L * 1024 * 1024 * 1024) {
-            TextView warn = text("Low space: unpacking a ROM needs several GB free", 12, ERR, false);
-            warn.setPadding(0, dp(6), 0, 0);
-            card.addView(warn);
+
+        if (ext) {
+            TextView path = text(r.name, 11, SUB, false);
+            path.setSingleLine(true);
+            path.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            path.setPadding(0, dp(4), 0, 0);
+            card.addView(path);
+        } else {
+            boolean root = runner != null && runner.isRoot();
+            TextView rt = text(root ? "● Root" : "● No root", 11, root ? OK : ERR, false);
+            rt.setPadding(0, dp(4), 0, 0);
+            card.addView(rt);
+            if (r.freeBytes < 10L * 1024 * 1024 * 1024) {
+                TextView warn = text("Low space for ROM work", 11, ERR, false);
+                warn.setPadding(0, dp(2), 0, 0);
+                card.addView(warn);
+            }
         }
-        TextView hint = text(ext ? "Tap to browse & add folders" : "Tap for details", 11, SUB, false);
-        hint.setPadding(0, dp(8), 0, 0);
-        card.addView(hint);
-        if (ext) card.setOnClickListener(v -> openExplorer(EX_PIN, null, false, r.name));
-        else card.setOnClickListener(v -> showStorageInfo());
-        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
-        return wrap;
+        return card;
     }
 
     private View projectCard(Row r) {
@@ -702,58 +745,6 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             return null;
         }
-    }
-
-    private String statLine(String label, String path) {
-        try {
-            StatFs sf = new StatFs(path);
-            return label + " (" + path + ")\n  total " + humanSize(sf.getTotalBytes())
-                    + "\n  avail " + humanSize(sf.getAvailableBytes())
-                    + "\n  free  " + humanSize(sf.getFreeBytes()) + "\n\n";
-        } catch (Exception e) {
-            return label + ": error " + e.getMessage() + "\n\n";
-        }
-    }
-
-    /** Tampilkan angka storage dari beberapa sumber sekaligus, untuk mencari mana yang salah. */
-    private void showStorageInfo() {
-        new Thread(() -> {
-            StringBuilder sb = new StringBuilder();
-            try {
-                if (Build.VERSION.SDK_INT >= 26) {
-                    android.app.usage.StorageStatsManager m = (android.app.usage.StorageStatsManager)
-                            getSystemService(android.content.Context.STORAGE_STATS_SERVICE);
-                    sb.append("StorageStats (Settings)\n  total ")
-                            .append(humanSize(m.getTotalBytes(StorageManager.UUID_DEFAULT)))
-                            .append("\n  free  ")
-                            .append(humanSize(m.getFreeBytes(StorageManager.UUID_DEFAULT))).append("\n\n");
-                }
-            } catch (Exception e) {
-                sb.append("StorageStats: error ").append(e.getMessage()).append("\n\n");
-            }
-            sb.append(statLine("StatFs sdcard", Environment.getExternalStorageDirectory().getPath()));
-            sb.append(statLine("StatFs data", Environment.getDataDirectory().getPath()));
-            if (runner != null) {
-                sb.append("df (shell").append(runner.isRoot() ? ", root" : "").append(")\n")
-                        .append(runner.capture("df -h /data /sdcard /data/media 2>&1"));
-            }
-            final String msg = sb.toString();
-            ui.post(() -> {
-                TextView tv = text(msg, 12, TXT, false);
-                tv.setTypeface(Typeface.MONOSPACE);
-                tv.setTextIsSelectable(true);
-                tv.setPadding(dp(20), dp(8), dp(20), dp(8));
-                ScrollView sv = new ScrollView(this);
-                sv.addView(tv);
-                AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                        .setTitle("Storage details")
-                        .setView(sv)
-                        .setPositiveButton("Close", null).create();
-                d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
-                d.show();
-                d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ACCENT);
-            });
-        }).start();
     }
 
     private static String humanSize(long b) {
@@ -948,10 +939,10 @@ public class MainActivity extends Activity {
         row.addView(mt);
         TextView more = text("⋮", 18, SUB, true);
         more.setGravity(Gravity.CENTER);
-        more.setOnClickListener(v -> entryMenu(r, f[1], dir));
+        more.setOnClickListener(v -> entryMenu(r, f[1], dir, meta));
         row.addView(more, new LinearLayout.LayoutParams(dp(30), dp(40)));
         row.setOnLongClickListener(v -> {
-            entryMenu(r, f[1], dir);
+            entryMenu(r, f[1], dir, meta);
             return true;
         });
         ImageView del = new ImageView(this);
@@ -1103,7 +1094,9 @@ public class MainActivity extends Activity {
                 @Override public int compare(Row a, Row b) { return Long.compare(b.mtime, a.mtime); }
             });
             List<Row> res = new ArrayList<>();
-            if (storage != null) res.add(storage);
+            Row dk = new Row();
+            dk.kind = Row.DISKS;
+            if (storage != null) dk.disks.add(storage);
             for (Vol v : sd) {
                 Row sr = new Row();
                 sr.kind = Row.STORAGE;
@@ -1114,8 +1107,9 @@ public class MainActivity extends Activity {
                 sr.total = humanSize(v.total);
                 sr.text = humanSize(v.total - v.avail);
                 sr.pct = (int) ((v.total - v.avail) * 100L / v.total);
-                res.add(sr);
+                dk.disks.add(sr);
             }
+            if (!dk.disks.isEmpty()) res.add(dk);
             Row sec = new Row();
             sec.kind = Row.SECTION;
             sec.text = "Projects (" + projects.size() + ")";
@@ -1346,24 +1340,61 @@ public class MainActivity extends Activity {
     }
 
     // ---------- salin / pindah ----------
-    private void entryMenu(Row r, String name, boolean dir) {
+    private void entryMenu(Row r, String name, boolean dir, String meta) {
         if (name.isEmpty() || name.equals(".") || name.equals("..") || name.contains("/")) return;
         final String path = pathOf(r) + "/" + name;
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle(name)
-                .setItems(new String[]{"Copy to…", "Move to…"},
-                        (x, which) -> openExplorer(EX_DEST, path, which == 1, null))
-                .setNegativeButton("Cancel", null).create();
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(20), dp(18), dp(14));
+        TextView nm = text(name, 17, TXT, true);
+        nm.setSingleLine(true);
+        nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        box.addView(nm);
+        TextView mt = text((dir ? "Folder" : "File") + "  •  " + meta, 12, SUB, false);
+        mt.setPadding(0, dp(2), 0, dp(12));
+        box.addView(mt);
+        final AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setView(box).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        addAction(box, R.drawable.ic_copy, "Copy to…", "Keep the original where it is", () -> {
+            d.dismiss();
+            openExplorer(EX_DEST, path, false, null);
+        });
+        addAction(box, R.drawable.ic_move, "Move to…", "Take it out of this folder", () -> {
+            d.dismiss();
+            openExplorer(EX_DEST, path, true, null);
+        });
         d.show();
-        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+    }
+
+    private void addAction(LinearLayout box, int icon, String title, String desc, Runnable click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(12), dp(12), dp(12));
+        row.setBackground(ripple(SURFACE2, 14));
+        FrameLayout badge = new FrameLayout(this);
+        badge.setBackground(rect(0x22FF8282, 12));
+        ImageView ic = new ImageView(this);
+        ic.setImageResource(icon);
+        badge.addView(ic, new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+        row.addView(badge, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(14), 0, dp(6), 0);
+        col.addView(text(title, 15, TXT, true));
+        col.addView(text(desc, 12, SUB, false));
+        row.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.setOnClickListener(v -> click.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = dp(8);
+        box.addView(row, lp);
     }
 
     private void transfer(String src, String destDir, boolean move) {
         Map<String, String> env = new LinkedHashMap<>();
         env.put("SRC", src);
         env.put("DST_DIR", destDir);
-        run((move ? "Move " : "Copy ") + baseName(src), "samples/transfer.sh " + (move ? "move" : "copy"), env);
+        run((move ? "Move " : "Copy ") + baseName(src), "samples/transfer.sh " + (move ? "move" : "copy"), env, true);
     }
 
     // ---------- explorer folder (pilih folder untuk di-pin / tujuan salin-pindah) ----------
@@ -1372,6 +1403,7 @@ public class MainActivity extends Activity {
         Explorer ex = new Explorer(mode, src, move, startRoot);
         push(mode == EX_PIN ? "Add folder" : (move ? "Move to…" : "Copy to…"), ex.box);
         stack.get(stack.size() - 1).explorer = ex;
+        stack.get(stack.size() - 1).plain = true;
         updateHeader();
     }
 
@@ -1475,12 +1507,37 @@ public class MainActivity extends Activity {
             box.removeAllViews();
             box.setPadding(dp(14), dp(6), dp(14), dp(14));
             if (mode == EX_DEST) {
-                TextView t = text((move ? "Moving: " : "Copying: ") + baseName(src), 13, TXT, true);
-                t.setSingleLine(true);
-                t.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-                t.setPadding(dp(2), 0, 0, dp(8));
-                box.addView(t);
+                LinearLayout hc = new LinearLayout(MainActivity.this);
+                hc.setGravity(Gravity.CENTER_VERTICAL);
+                hc.setBackground(rect(SURFACE, 16));
+                hc.setPadding(dp(14), dp(12), dp(14), dp(12));
+                FrameLayout badge = new FrameLayout(MainActivity.this);
+                badge.setBackground(rect(0x22FF8282, 12));
+                ImageView ic = new ImageView(MainActivity.this);
+                ic.setImageResource(move ? R.drawable.ic_move : R.drawable.ic_copy);
+                badge.addView(ic, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+                hc.addView(badge, new LinearLayout.LayoutParams(dp(44), dp(44)));
+                LinearLayout hcol = new LinearLayout(MainActivity.this);
+                hcol.setOrientation(LinearLayout.VERTICAL);
+                hcol.setPadding(dp(14), 0, 0, 0);
+                hcol.addView(text(move ? "MOVING" : "COPYING", 10, ACCENT, true));
+                TextView hn = text(baseName(src), 15, TXT, true);
+                hn.setSingleLine(true);
+                hn.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+                hcol.addView(hn);
+                TextView hf = text("from " + parentOf(src), 11, SUB, false);
+                hf.setTypeface(Typeface.MONOSPACE);
+                hf.setSingleLine(true);
+                hf.setEllipsize(TextUtils.TruncateAt.START);
+                hcol.addView(hf);
+                hc.addView(hcol, new LinearLayout.LayoutParams(0, -2, 1f));
+                LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-1, -2);
+                hp.bottomMargin = dp(14);
+                box.addView(hc, hp);
             }
+            TextView lbl = text(mode == EX_PIN ? "PICK A FOLDER TO ADD TO THE MENU" : "CHOOSE DESTINATION", 11, SUB, true);
+            lbl.setPadding(dp(2), 0, 0, dp(8));
+            box.addView(lbl);
             if (roots.size() > 1) {
                 HorizontalScrollView hs = new HorizontalScrollView(MainActivity.this);
                 hs.setHorizontalScrollBarEnabled(false);
@@ -2041,6 +2098,10 @@ public class MainActivity extends Activity {
     }
 
     private void run(String t, String body, Map<String, String> env) {
+        run(t, body, env, false);
+    }
+
+    private void run(String t, String body, Map<String, String> env, boolean plain) {
         if (running != null) {
             toast("Another task is running");
             return;
@@ -2056,6 +2117,8 @@ public class MainActivity extends Activity {
             }
         });
         push(t, c.root);
+        stack.get(stack.size() - 1).plain = plain;
+        updateHeader();
         new Thread(() -> {
             int code = -1;
             Runner.Started st = null;
