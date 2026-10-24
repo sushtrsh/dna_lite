@@ -3,7 +3,11 @@ package com.dna.tools;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -31,6 +35,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -85,12 +90,14 @@ public class MainActivity extends Activity {
         boolean home;
         Runnable onShow;
         EditorView editor;
+        Explorer explorer;
     }
 
     private static final class Row {
-        static final int STORAGE = 0, SECTION = 1, PROJECT = 2, EMPTY = 3, NODE = 4;
+        static final int STORAGE = 0, SECTION = 1, PROJECT = 2, EMPTY = 3, NODE = 4, PIN = 5, ADD = 6;
         int kind;
-        String name = "", size = "", avail = "", total = "", text = "";
+        String name = "", size = "", avail = "", total = "", text = "", title = "";
+        boolean missing;
         int count, pct;
         long mtime;
         Menu.Node node;
@@ -103,9 +110,18 @@ public class MainActivity extends Activity {
     private static final class Browse {
         boolean open, loading;
         int base;   // 0 = /sdcard/DNA/<project>, 1 = hasil unpack di /data/DNA/<project>
+        String abs; // kalau diisi: folder yang di-pin (path absolut), base diabaikan
         final List<String> sub = new ArrayList<>();
         List<String[]> files = new ArrayList<>();
     }
+
+    /** Volume penyimpanan eksternal (micro SD / USB OTG). */
+    private static final class Vol {
+        String path = "", label = "";
+        long total, avail;
+    }
+
+    private static final int EX_PIN = 0, EX_DEST = 1;
 
     private static final class Sec {
         String title = "";
@@ -132,6 +148,15 @@ public class MainActivity extends Activity {
     private Menu.Node unzipNode;
     private final Map<String, Browse> browse = new HashMap<>();
     private volatile Runner.Started running;
+    private volatile List<Vol> sdCache = new ArrayList<>();
+    private final BroadcastReceiver mediaRx = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            // kasih waktu mount selesai sebelum cek ulang
+            ui.postDelayed(() -> {
+                if (runner != null && stack.size() == 1 && stack.get(0).home) reloadHome();
+            }, 1500);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle b) {
@@ -193,6 +218,15 @@ public class MainActivity extends Activity {
         setContentView(root);
         updateHeader();
 
+        IntentFilter mf = new IntentFilter();
+        mf.addAction(Intent.ACTION_MEDIA_MOUNTED);
+        mf.addAction(Intent.ACTION_MEDIA_UNMOUNTED);
+        mf.addAction(Intent.ACTION_MEDIA_EJECT);
+        mf.addAction(Intent.ACTION_MEDIA_REMOVED);
+        mf.addAction(Intent.ACTION_MEDIA_BAD_REMOVAL);
+        mf.addDataScheme("file");
+        registerReceiver(mediaRx, mf);
+
         if (Build.VERSION.SDK_INT >= 23 && Build.VERSION.SDK_INT < 30) {
             requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE,
                     Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1);
@@ -228,6 +262,18 @@ public class MainActivity extends Activity {
                 ui.post(() -> message("Error: " + e));
             }
         }).start();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (runner != null && stack.size() == 1 && stack.get(0).home) reloadHome();
+    }
+
+    @Override
+    protected void onDestroy() {
+        try { unregisterReceiver(mediaRx); } catch (Exception ignored) { }
+        super.onDestroy();
     }
 
     // ---------- util & styling ----------
@@ -346,7 +392,8 @@ public class MainActivity extends Activity {
         spacer.setVisibility(home ? View.VISIBLE : View.GONE);
         title.setVisibility(home ? View.GONE : View.VISIBLE);
         plus.setVisibility(home ? View.VISIBLE : View.GONE);
-        chipsRow.setVisibility(home ? View.GONE : View.VISIBLE);
+        boolean exTop = !stack.isEmpty() && stack.get(stack.size() - 1).explorer != null;
+        chipsRow.setVisibility(home || exTop ? View.GONE : View.VISIBLE);
         projChip.setText("Project: " + display(project()));
         boolean r = runner != null && runner.isRoot();
         rootChip.setText(r ? "● Root" : "● No root");
@@ -369,6 +416,7 @@ public class MainActivity extends Activity {
                 confirmDiscard();
                 return;
             }
+            if (top.explorer != null && top.explorer.up()) return;
             stack.remove(stack.size() - 1);
             showTop();
         } else {
@@ -469,7 +517,7 @@ public class MainActivity extends Activity {
             @Override public long getItemId(int i) { return i; }
             @Override public boolean isEnabled(int i) {
                 Row r = rows.get(i);
-                if (r.kind == Row.PROJECT) return true;
+                if (r.kind == Row.PROJECT || r.kind == Row.PIN || r.kind == Row.ADD) return true;
                 return r.kind == Row.NODE && (r.node.type == Menu.ACTION || r.node.type == Menu.PAGE);
             }
             @Override public View getView(int i, View cv, ViewGroup parent) { return rowView(rows.get(i)); }
@@ -477,14 +525,21 @@ public class MainActivity extends Activity {
         lv.setAdapter(homeAdapter);
         lv.setOnItemClickListener((a, v, pos, id) -> {
             Row r = rows.get(pos);
-            if (r.kind == Row.PROJECT) toggleProject(r);
+            if (r.kind == Row.PROJECT || r.kind == Row.PIN) toggleProject(r);
+            else if (r.kind == Row.ADD) openExplorer(EX_PIN, null, false, null);
             else if (r.kind == Row.NODE) onNode(r.node);
         });
         lv.setOnItemLongClickListener((a, v, pos, id) -> {
             Row r = rows.get(pos);
-            if (r.kind != Row.PROJECT) return false;
-            deleteDialog(r.name);
-            return true;
+            if (r.kind == Row.PROJECT) {
+                deleteDialog(r.name);
+                return true;
+            }
+            if (r.kind == Row.PIN) {
+                unpinDialog(r.name);
+                return true;
+            }
+            return false;
         });
         return lv;
     }
@@ -507,6 +562,8 @@ public class MainActivity extends Activity {
             }
             case Row.STORAGE:
                 return storageCard(r);
+            case Row.ADD:
+                return addCard();
             default:
                 return projectCard(r);
         }
@@ -519,37 +576,40 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(rect(SURFACE, 18));
         card.setPadding(dp(18), dp(16), dp(18), dp(16));
-        card.addView(text("INTERNAL STORAGE", 11, SUB, true));
+        final boolean ext = !r.name.isEmpty();
+        card.addView(text(r.title, 11, SUB, true));
         TextView big = text(r.avail + " available", 22, TXT, true);
         big.setPadding(0, dp(4), 0, dp(10));
         card.addView(big);
         LinearLayout bar = new LinearLayout(this);
         bar.setBackground(rect(SURFACE2, 4));
         View fill = new View(this);
-        fill.setBackground(rect(r.freeBytes < 5L * 1024 * 1024 * 1024 ? ERR : ACCENT, 4));
+        fill.setBackground(rect(!ext && r.freeBytes < 5L * 1024 * 1024 * 1024 ? ERR : ACCENT, 4));
         int pct = Math.max(2, Math.min(100, r.pct));
         bar.addView(fill, new LinearLayout.LayoutParams(0, dp(8), pct));
         bar.addView(new View(this), new LinearLayout.LayoutParams(0, dp(8), 100 - pct));
         card.addView(bar, new LinearLayout.LayoutParams(-1, dp(8)));
         boolean root = runner != null && runner.isRoot();
-        TextView foot = text(r.text + " of " + r.total + " used  •  " + (root ? "Root ✓" : "No root"), 12, SUB, false);
+        TextView foot = text(r.text + " of " + r.total + " used  •  " + (ext ? r.name : (root ? "Root ✓" : "No root")), 12, SUB, false);
         foot.setPadding(0, dp(10), 0, 0);
         card.addView(foot);
-        if (r.freeBytes < 10L * 1024 * 1024 * 1024) {
+        if (!ext && r.freeBytes < 10L * 1024 * 1024 * 1024) {
             TextView warn = text("Low space: unpacking a ROM needs several GB free", 12, ERR, false);
             warn.setPadding(0, dp(6), 0, 0);
             card.addView(warn);
         }
-        TextView hint = text("Tap for details", 11, SUB, false);
+        TextView hint = text(ext ? "Tap to browse & add folders" : "Tap for details", 11, SUB, false);
         hint.setPadding(0, dp(8), 0, 0);
         card.addView(hint);
-        card.setOnClickListener(v -> showStorageInfo());
+        if (ext) card.setOnClickListener(v -> openExplorer(EX_PIN, null, false, r.name));
+        else card.setOnClickListener(v -> showStorageInfo());
         wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
         return wrap;
     }
 
     private View projectCard(Row r) {
-        boolean active = r.name.equals(project());
+        final boolean pin = r.kind == Row.PIN;
+        boolean active = !pin && r.name.equals(project());
         FrameLayout wrap = new FrameLayout(this);
         wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
         LinearLayout card = new LinearLayout(this);
@@ -573,7 +633,7 @@ public class MainActivity extends Activity {
         col.setPadding(dp(14), 0, dp(8), 0);
         LinearLayout nameRow = new LinearLayout(this);
         nameRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView nm = text(display(r.name), 16, TXT, true);
+        TextView nm = text(pin ? r.text : display(r.name), 16, TXT, true);
         nm.setSingleLine(true);
         nm.setEllipsize(TextUtils.TruncateAt.END);
         nameRow.addView(nm, new LinearLayout.LayoutParams(-2, -2, 0f));
@@ -590,15 +650,25 @@ public class MainActivity extends Activity {
         col.addView(nameRow);
         String date = r.mtime > 0
                 ? new SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(new Date(r.mtime * 1000L)) : "";
-        String meta = (r.size.isEmpty() ? "–" : r.size) + "  •  " + r.count + " items" + (date.isEmpty() ? "" : "  •  " + date);
-        col.addView(text(meta, 12, SUB, false));
+        String meta = pin
+                ? (r.missing ? "Not available (SD card removed?)" : r.count + " items")
+                : (r.size.isEmpty() ? "–" : r.size) + "  •  " + r.count + " items" + (date.isEmpty() ? "" : "  •  " + date);
+        col.addView(text(meta, 12, r.missing ? ERR : SUB, false));
+        if (pin) {
+            TextView pt = text(r.name, 11, SUB, false);
+            pt.setTypeface(Typeface.MONOSPACE);
+            pt.setSingleLine(true);
+            pt.setEllipsize(TextUtils.TruncateAt.START);
+            col.addView(pt);
+        }
         head.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        TextView go = text("›", 32, ACCENT, true);
+        TextView go = text(pin ? "×" : "›", 32, ACCENT, true);
         go.setGravity(Gravity.CENTER);
         go.setPadding(0, 0, 0, dp(4));
         go.setBackground(ripple(SURFACE2, 14));
-        go.setOnClickListener(v -> openProject(r.name));
+        if (pin) go.setOnClickListener(v -> unpinDialog(r.name));
+        else go.setOnClickListener(v -> openProject(r.name));
         head.addView(go, new LinearLayout.LayoutParams(dp(54), dp(54)));
         card.addView(head);
 
@@ -622,6 +692,7 @@ public class MainActivity extends Activity {
 
             Row r = new Row();
             r.kind = Row.STORAGE;
+            r.title = "INTERNAL STORAGE";
             r.freeBytes = available;
             r.avail = humanSize(available);
             r.total = humanSize(total);
@@ -701,7 +772,7 @@ public class MainActivity extends Activity {
 
     /** Ekspresi shell menuju folder yang sedang dibuka. Variabel $d harus sudah di-set. */
     private String dirExpr(Browse b) {
-        StringBuilder sb = new StringBuilder("\"" + baseExpr(b) + "/$d\"");
+        StringBuilder sb = new StringBuilder(b.abs != null ? Runner.q(b.abs) : "\"" + baseExpr(b) + "/$d\"");
         for (String seg : b.sub) sb.append('/').append(Runner.q(seg));
         return sb.toString();
     }
@@ -709,9 +780,12 @@ public class MainActivity extends Activity {
     private String pathOf(Row r) {
         Browse b = r.b;
         StringBuilder sb = new StringBuilder();
-        if (b.base == 0) sb.append("/sdcard/DNA/");
-        else sb.append(runner != null && runner.isRoot() ? "/data/DNA/" : getFilesDir().getAbsolutePath() + "/DNA/");
-        sb.append(r.name);
+        if (b.abs != null) sb.append(b.abs);
+        else {
+            if (b.base == 0) sb.append("/sdcard/DNA/");
+            else sb.append(runner != null && runner.isRoot() ? "/data/DNA/" : getFilesDir().getAbsolutePath() + "/DNA/");
+            sb.append(r.name);
+        }
         for (String seg : b.sub) sb.append('/').append(seg);
         return sb.toString();
     }
@@ -759,6 +833,7 @@ public class MainActivity extends Activity {
             r.b = new Browse();
             browse.put(r.name, r.b);
         }
+        if (r.kind == Row.PIN) r.b.abs = r.name;
         r.b.open = !r.b.open;
         if (!r.b.open) {
             homeAdapter.notifyDataSetChanged();
@@ -788,14 +863,16 @@ public class MainActivity extends Activity {
         ll.bottomMargin = dp(10);
         box.addView(line, ll);
 
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.addView(tab("Project", b.base == 0, () -> switchBase(r, 0)));
-        if (r.hasUnpacked) {
-            LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(-2, -2);
-            tl.leftMargin = dp(8);
-            tabs.addView(tab("Unpacked (" + r.uCount + ")", b.base == 1, () -> switchBase(r, 1)), tl);
+        if (b.abs == null) {
+            LinearLayout tabs = new LinearLayout(this);
+            tabs.addView(tab("Project", b.base == 0, () -> switchBase(r, 0)));
+            if (r.hasUnpacked) {
+                LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(-2, -2);
+                tl.leftMargin = dp(8);
+                tabs.addView(tab("Unpacked (" + r.uCount + ")", b.base == 1, () -> switchBase(r, 1)), tl);
+            }
+            box.addView(tabs);
         }
-        box.addView(tabs);
 
         TextView path = text(pathOf(r), 11, SUB, false);
         path.setTypeface(Typeface.MONOSPACE);
@@ -869,6 +946,14 @@ public class MainActivity extends Activity {
         TextView mt = text(meta, 12, SUB, false);
         mt.setPadding(dp(8), 0, 0, 0);
         row.addView(mt);
+        TextView more = text("⋮", 18, SUB, true);
+        more.setGravity(Gravity.CENTER);
+        more.setOnClickListener(v -> entryMenu(r, f[1], dir));
+        row.addView(more, new LinearLayout.LayoutParams(dp(30), dp(40)));
+        row.setOnLongClickListener(v -> {
+            entryMenu(r, f[1], dir);
+            return true;
+        });
         ImageView del = new ImageView(this);
         del.setImageResource(R.drawable.ic_delete);
         del.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -983,6 +1068,8 @@ public class MainActivity extends Activity {
             String out = runner.capture(LOAD);
             List<Row> projects = new ArrayList<>();
             Row storage = storageRow();
+            List<Vol> sd = findSdCards();
+            sdCache = sd;
             for (String line : out.split("\n")) {
                 String[] p = line.split("\\|", -1);
                 try {
@@ -1017,6 +1104,18 @@ public class MainActivity extends Activity {
             });
             List<Row> res = new ArrayList<>();
             if (storage != null) res.add(storage);
+            for (Vol v : sd) {
+                Row sr = new Row();
+                sr.kind = Row.STORAGE;
+                sr.name = v.path;
+                sr.title = v.label.toUpperCase(Locale.getDefault());
+                sr.freeBytes = v.avail;
+                sr.avail = humanSize(v.avail);
+                sr.total = humanSize(v.total);
+                sr.text = humanSize(v.total - v.avail);
+                sr.pct = (int) ((v.total - v.avail) * 100L / v.total);
+                res.add(sr);
+            }
             Row sec = new Row();
             sec.kind = Row.SECTION;
             sec.text = "Projects (" + projects.size() + ")";
@@ -1028,6 +1127,46 @@ public class MainActivity extends Activity {
                 res.add(e);
             }
             res.addAll(projects);
+
+            List<String> pins = loadPins();
+            Row fsec = new Row();
+            fsec.kind = Row.SECTION;
+            fsec.text = "Folders (" + pins.size() + ")";
+            res.add(fsec);
+            Row add = new Row();
+            add.kind = Row.ADD;
+            res.add(add);
+            if (!pins.isEmpty()) {
+                StringBuilder sh = new StringBuilder();
+                for (String pp : pins) {
+                    sh.append("p=").append(Runner.q(pp)).append('\n')
+                      .append("if [ -d \"$p\" ]; then c=$(ls -A \"$p\" 2>/dev/null | wc -l | tr -d ' '); echo \"K|1|$c|$p\"; ")
+                      .append("else echo \"K|0|0|$p\"; fi\n");
+                }
+                Map<String, String[]> info = new HashMap<>();
+                for (String line : runner.capture(sh.toString()).split("\n")) {
+                    String[] q = line.split("\\|", 4);
+                    if (q.length == 4 && q[0].equals("K")) info.put(q[3], q);
+                }
+                for (String pp : pins) {
+                    Row pr = new Row();
+                    pr.kind = Row.PIN;
+                    pr.name = pp;
+                    pr.text = pinLabel(pp, sd);
+                    String[] q = info.get(pp);
+                    pr.missing = q == null || !q[1].equals("1");
+                    try { pr.count = q == null ? 0 : Integer.parseInt(q[2].trim()); } catch (NumberFormatException ignored) { }
+                    Browse pb = browse.get(pp);
+                    if (pb == null) {
+                        pb = new Browse();
+                        browse.put(pp, pb);
+                    }
+                    pb.abs = pp;
+                    pr.b = pb;
+                    if (pb.open && !pr.missing) loadDir(pp, pb);
+                    res.add(pr);
+                }
+            }
             List<Menu.Node> flat = new ArrayList<>();
             Menu.flatten(toolNodes, flat);
             for (Menu.Node n : flat) {
@@ -1042,6 +1181,389 @@ public class MainActivity extends Activity {
                 if (homeAdapter != null) homeAdapter.notifyDataSetChanged();
             });
         }).start();
+    }
+
+    // ---------- storage eksternal (micro SD / USB OTG) ----------
+    private String internalRoot() {
+        try {
+            File e = Environment.getExternalStorageDirectory();
+            if (e != null && e.getPath().startsWith("/storage/")) return e.getPath();
+        } catch (Exception ignored) { }
+        return "/storage/emulated/0";
+    }
+
+    private static String canon(String p) {
+        try { return new File(p).getCanonicalPath(); } catch (IOException e) { return p; }
+    }
+
+    private static String baseName(String p) {
+        int i = p.lastIndexOf('/');
+        return i >= 0 && i < p.length() - 1 ? p.substring(i + 1) : p;
+    }
+
+    private static String parentOf(String p) {
+        int i = p.lastIndexOf('/');
+        return i > 0 ? p.substring(0, i) : "/";
+    }
+
+    /** {total, available} dalam byte, atau null kalau path tidak bisa dibaca. */
+    private long[] statOf(String path) {
+        try {
+            StatFs sf = new StatFs(path);
+            return new long[]{sf.getTotalBytes(), sf.getAvailableBytes()};
+        } catch (Exception ignored) { }
+        if (runner != null) {
+            try {
+                String out = runner.capture("df -k " + Runner.q(path) + " 2>/dev/null | tail -n 1").trim();
+                String[] t = out.split("\\s+");
+                // dari belakang: mount, use%, avail, used, 1K-blocks
+                if (t.length >= 5) {
+                    return new long[]{Long.parseLong(t[t.length - 5]) * 1024, Long.parseLong(t[t.length - 3]) * 1024};
+                }
+            } catch (Exception ignored) { }
+        }
+        return null;
+    }
+
+    /** Cari micro SD / drive removable yang sedang ter-mount. Panggil dari background thread. */
+    private List<Vol> findSdCards() {
+        final String in = canon(internalRoot());
+        final LinkedHashMap<String, String> cand = new LinkedHashMap<>();   // path -> label
+        if (Build.VERSION.SDK_INT >= 24) {
+            try {
+                StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+                for (android.os.storage.StorageVolume sv : sm.getStorageVolumes()) {
+                    if (sv.isPrimary() || !sv.isRemovable() || sv.getUuid() == null) continue;
+                    String st = sv.getState();
+                    if (!Environment.MEDIA_MOUNTED.equals(st) && !Environment.MEDIA_MOUNTED_READ_ONLY.equals(st)) continue;
+                    String d = sv.getDescription(this);
+                    cand.put("/storage/" + sv.getUuid(), d == null || d.trim().isEmpty() ? "SD card" : d.trim());
+                }
+            } catch (Exception ignored) { }
+        }
+        // cadangan (Android < 7 atau ROM aneh): scan /storage
+        List<String> names = new ArrayList<>();
+        String[] ls = new File("/storage").list();
+        if (ls != null) {
+            Collections.addAll(names, ls);
+        } else if (runner != null) {
+            for (String l : runner.capture("ls -1 /storage 2>/dev/null").split("\n")) {
+                if (!l.trim().isEmpty()) names.add(l.trim());
+            }
+        }
+        for (String n : names) {
+            if (n.equals("emulated") || n.equals("self")) continue;
+            String p = "/storage/" + n;
+            if (!cand.containsKey(p)) cand.put(p, "SD card");
+        }
+        long[] base = statOf("/storage");
+        List<Vol> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (Map.Entry<String, String> e : cand.entrySet()) {
+            String c = canon(e.getKey());
+            if (c.equals(in) || c.startsWith("/storage/emulated") || c.startsWith("/data/media") || !seen.add(c)) continue;
+            long[] st = statOf(e.getKey());
+            if (st == null || st[0] <= 0 || st[1] < 0 || st[1] > st[0]) continue;
+            // mount point kosong (kartu sudah dicabut) membaca statistik /storage, bukan kartunya
+            if (base != null && st[0] == base[0]) continue;
+            Vol v = new Vol();
+            v.path = e.getKey();
+            v.label = e.getValue();
+            v.total = st[0];
+            v.avail = st[1];
+            out.add(v);
+        }
+        return out;
+    }
+
+    // ---------- folder yang di-pin ke menu ----------
+    private SharedPreferences prefs() {
+        return getSharedPreferences("dna_ui", MODE_PRIVATE);
+    }
+
+    private List<String> loadPins() {
+        List<String> l = new ArrayList<>();
+        for (String p : prefs().getString("pins", "").split("\n")) {
+            if (!p.trim().isEmpty() && !l.contains(p)) l.add(p);
+        }
+        return l;
+    }
+
+    private void savePins(List<String> l) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : l) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(p);
+        }
+        prefs().edit().putString("pins", sb.toString()).apply();
+    }
+
+    private String pinLabel(String p, List<Vol> vols) {
+        if (p.equals(internalRoot())) return "Internal storage";
+        for (Vol v : vols) if (p.equals(v.path)) return v.label;
+        return baseName(p);
+    }
+
+    private void unpinDialog(String path) {
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Remove from menu?")
+                .setMessage(path + "\n\nThe folder itself is not deleted.")
+                .setPositiveButton("Remove", (x, w) -> {
+                    List<String> pins = loadPins();
+                    pins.remove(path);
+                    savePins(pins);
+                    browse.remove(path);
+                    reloadHome();
+                })
+                .setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ERR);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+    }
+
+    private View addCard() {
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
+        LinearLayout card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        card.setDuplicateParentStateEnabled(true);
+        card.setBackground(ripple(SURFACE, 16));
+        TextView badge = text("+", 20, ACCENT, true);
+        badge.setGravity(Gravity.CENTER);
+        badge.setBackground(rect(0x22FF8282, 14));
+        card.addView(badge, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(14), 0, dp(8), 0);
+        col.addView(text("Add folder", 16, TXT, false));
+        col.addView(text("Explore internal storage / SD card and pin a folder here", 12, SUB, false));
+        card.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+        card.addView(text("›", 22, SUB, false));
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
+    // ---------- salin / pindah ----------
+    private void entryMenu(Row r, String name, boolean dir) {
+        if (name.isEmpty() || name.equals(".") || name.equals("..") || name.contains("/")) return;
+        final String path = pathOf(r) + "/" + name;
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(name)
+                .setItems(new String[]{"Copy to…", "Move to…"},
+                        (x, which) -> openExplorer(EX_DEST, path, which == 1, null))
+                .setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+    }
+
+    private void transfer(String src, String destDir, boolean move) {
+        Map<String, String> env = new LinkedHashMap<>();
+        env.put("SRC", src);
+        env.put("DST_DIR", destDir);
+        run((move ? "Move " : "Copy ") + baseName(src), "samples/transfer.sh " + (move ? "move" : "copy"), env);
+    }
+
+    // ---------- explorer folder (pilih folder untuk di-pin / tujuan salin-pindah) ----------
+    private void openExplorer(int mode, String src, boolean move, String startRoot) {
+        if (runner == null) return;
+        Explorer ex = new Explorer(mode, src, move, startRoot);
+        push(mode == EX_PIN ? "Add folder" : (move ? "Move to…" : "Copy to…"), ex.box);
+        stack.get(stack.size() - 1).explorer = ex;
+        updateHeader();
+    }
+
+    private final class Explorer {
+        final int mode;
+        final String src;
+        final boolean move;
+        final List<Vol> roots = new ArrayList<>();
+        final LinearLayout box = new LinearLayout(MainActivity.this);
+        String root, cur;
+        boolean loading, failed;
+        List<String> dirs = new ArrayList<>();
+        int gen;   // hasil load yang sudah basi diabaikan
+
+        Explorer(int mode, String src, boolean move, String startRoot) {
+            this.mode = mode;
+            this.move = move;
+            final String in = internalRoot();
+            String s = src;
+            if (s != null && s.startsWith("/sdcard/")) s = in + s.substring(7);
+            this.src = s;
+            Vol iv = new Vol();
+            iv.path = in;
+            iv.label = "Internal";
+            roots.add(iv);
+            roots.addAll(sdCache);
+            String start = in;
+            for (Vol vol : roots) {
+                boolean hit = startRoot != null ? vol.path.equals(startRoot) : (s != null && s.startsWith(vol.path + "/"));
+                if (hit) start = vol.path;
+            }
+            root = start;
+            box.setOrientation(LinearLayout.VERTICAL);
+            go(start);
+        }
+
+        void go(String path) {
+            cur = path;
+            loading = true;
+            failed = false;
+            dirs = new ArrayList<>();
+            final int g = ++gen;
+            render();
+            new Thread(() -> {
+                String out = runner.capture("cd " + Runner.q(path) + " 2>/dev/null || { echo X; exit 0; }\n"
+                        + "n=0\n"
+                        + "for f in * .[!.]* ..?*; do\n"
+                        + "  [ -d \"$f\" ] || continue\n"
+                        + "  n=$((n+1)); [ $n -le 400 ] || break\n"
+                        + "  echo \"D|$f\"\n"
+                        + "done\n");
+                final List<String> res = new ArrayList<>();
+                boolean bad = false;
+                for (String l : out.split("\n")) {
+                    if (l.equals("X")) bad = true;
+                    else if (l.startsWith("D|") && l.length() > 2) res.add(l.substring(2));
+                }
+                Collections.sort(res, String.CASE_INSENSITIVE_ORDER);
+                final boolean fb = bad;
+                ui.post(() -> {
+                    if (g != gen) return;
+                    loading = false;
+                    failed = fb;
+                    dirs = res;
+                    render();
+                });
+            }).start();
+        }
+
+        /** Naik satu folder. false kalau sudah di root volume. */
+        boolean up() {
+            if (cur == null || cur.equals(root)) return false;
+            String parent = parentOf(cur);
+            go(parent.length() < root.length() ? root : parent);
+            return true;
+        }
+
+        private View row(String name, boolean upRow, Runnable click) {
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(6), dp(11), dp(6), dp(11));
+            row.setBackground(ripple(0x00000000, 10));
+            TextView m = text(upRow ? "▴" : "▸", 14, ACCENT, false);
+            m.setWidth(dp(22));
+            row.addView(m);
+            TextView nm = text(name, 14, TXT, false);
+            nm.setSingleLine(true);
+            nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
+            row.setOnClickListener(x -> click.run());
+            return row;
+        }
+
+        private View note(String s) {
+            TextView t = text(s, 13, SUB, false);
+            t.setPadding(dp(6), dp(12), dp(6), dp(12));
+            return t;
+        }
+
+        void render() {
+            box.removeAllViews();
+            box.setPadding(dp(14), dp(6), dp(14), dp(14));
+            if (mode == EX_DEST) {
+                TextView t = text((move ? "Moving: " : "Copying: ") + baseName(src), 13, TXT, true);
+                t.setSingleLine(true);
+                t.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+                t.setPadding(dp(2), 0, 0, dp(8));
+                box.addView(t);
+            }
+            if (roots.size() > 1) {
+                HorizontalScrollView hs = new HorizontalScrollView(MainActivity.this);
+                hs.setHorizontalScrollBarEnabled(false);
+                LinearLayout chips = new LinearLayout(MainActivity.this);
+                for (Vol vol : roots) {
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+                    lp.rightMargin = dp(8);
+                    chips.addView(tab(vol.label, vol.path.equals(root), () -> {
+                        root = vol.path;
+                        go(vol.path);
+                    }), lp);
+                }
+                hs.addView(chips);
+                box.addView(hs);
+            }
+            TextView p = text(cur, 11, SUB, false);
+            p.setTypeface(Typeface.MONOSPACE);
+            p.setSingleLine(true);
+            p.setEllipsize(TextUtils.TruncateAt.START);
+            p.setPadding(dp(2), dp(10), 0, dp(6));
+            box.addView(p);
+
+            ScrollView sv = new ScrollView(MainActivity.this);
+            sv.setBackground(rect(SURFACE, 16));
+            LinearLayout list = new LinearLayout(MainActivity.this);
+            list.setOrientation(LinearLayout.VERTICAL);
+            list.setPadding(dp(10), dp(8), dp(10), dp(8));
+            sv.addView(list);
+            if (!cur.equals(root)) list.addView(row("..", true, () -> up()));
+            if (loading) list.addView(note("Loading…"));
+            else if (failed) list.addView(note("Cannot open this folder"));
+            else if (dirs.isEmpty()) list.addView(note("No subfolders"));
+            else for (String d : dirs) list.addView(row(d, false, () -> go(cur + "/" + d)));
+            box.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+            Button b;
+            if (mode == EX_PIN) {
+                boolean exists = loadPins().contains(cur);
+                b = button(exists ? "Already in menu" : "Add this folder to menu", exists ? SURFACE2 : ACCENT);
+                b.setEnabled(!exists && !loading && !failed);
+                b.setOnClickListener(x -> {
+                    final String target = cur;
+                    if (target.indexOf('\n') >= 0) {
+                        toast("Unsupported folder name");
+                        return;
+                    }
+                    List<String> pins = loadPins();
+                    if (!pins.contains(target)) {
+                        pins.add(target);
+                        savePins(pins);
+                    }
+                    toast("Added to menu: " + pinLabel(target, sdCache));
+                    if (stack.size() > 1) {
+                        stack.remove(stack.size() - 1);
+                        showTop();
+                    }
+                });
+            } else {
+                b = button(move ? "Move here" : "Copy here", ACCENT);
+                b.setEnabled(!loading && !failed);
+                b.setOnClickListener(x -> {
+                    final String dest = cur;
+                    if ((dest + "/").startsWith(src + "/")) {
+                        toast("Can't put a folder inside itself");
+                        return;
+                    }
+                    if (move && dest.equals(parentOf(src))) {
+                        toast("Already in this folder");
+                        return;
+                    }
+                    if (running != null) {
+                        toast("Another task is running");
+                        return;
+                    }
+                    if (!stack.isEmpty() && stack.get(stack.size() - 1).explorer == this) stack.remove(stack.size() - 1);
+                    transfer(src, dest, move);
+                });
+            }
+            b.setAlpha(b.isEnabled() ? 1f : 0.5f);
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, dp(52));
+            bl.topMargin = dp(12);
+            box.addView(b, bl);
+        }
     }
 
     private void openProject(String name) {
