@@ -1150,6 +1150,7 @@ public class MainActivity extends Activity {
         // bar seleksi selalu dibuat (disembunyikan saat tidak aktif) supaya bisa dianimasikan
         final boolean canUnpack = b.abs == null && b.base == 0 && b.sub.isEmpty();
         final boolean canRepack = b.abs == null && b.base == 1 && b.sub.isEmpty();
+        final boolean canSuper = inOutFolder(b);
         b.refs.clear();
         b.selP = b.selMode ? 1f : 0f;
         b.unpackChip = null;
@@ -1174,6 +1175,9 @@ public class MainActivity extends Activity {
         } else if (canRepack) {
             labels.add("Repack");
             clicks.add(() -> multiRepack(r));
+        } else if (canSuper) {
+            labels.add("Repack to super");
+            clicks.add(() -> multiRepackSuper(r));
         }
         labels.add("Copy");
         clicks.add(() -> openExplorerMulti(selectedPaths(r), false));
@@ -1190,7 +1194,8 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-2, -2);
             al.rightMargin = dp(8);
             TextView chipV = tab(labels.get(i), labels.get(i).equals("Delete"), clicks.get(i));
-            if (labels.get(i).equals("Unpack") || labels.get(i).equals("Repack")) b.unpackChip = chipV;
+            String lbl = labels.get(i);
+            if (lbl.equals("Unpack") || lbl.equals("Repack") || lbl.equals("Repack to super")) b.unpackChip = chipV;
             acts.addView(chipV, al);
         }
         hs.addView(acts);
@@ -1340,6 +1345,65 @@ public class MainActivity extends Activity {
         int c = 0;
         for (String[] f : b.files) if (f[0].equals("D") && b.sel.contains(f[1]) && !f[1].equals("config")) c++;
         return c;
+    }
+
+    /** Folder out/ di dalam project (hasil repack disimpan di sini). */
+    private static boolean inOutFolder(Browse b) {
+        return b.abs == null && b.base == 0 && b.sub.size() == 1 && b.sub.get(0).equals("out");
+    }
+
+    /** Pack IMG terpilih di folder out menjadi super.img (pakai action "Repack super.img", diberi nama "Repack to super"). */
+    private void multiRepackSuper(Row r) {
+        final Browse b = r.b;
+        final List<String> names = new ArrayList<>();
+        final List<String> paths = new ArrayList<>();
+        boolean hasSuper = false;
+        for (String[] f : b.files) {
+            if (!f[0].equals("F") || !b.sel.contains(f[1]) || !"img".equals(unpackKind(f[1]))) continue;
+            if (isSuperImg(f[1])) hasSuper = true;
+            else if (!f[1].contains(",")) {
+                names.add(f[1]);
+                paths.add(pathOf(r) + "/" + f[1]);
+            }
+        }
+        if (names.isEmpty()) {
+            toast(hasSuper ? "super.img can't be packed into super" : "Select partition .img files to pack into super");
+            return;
+        }
+        final String project = r.name;
+        final String joined = TextUtils.join(",", paths);
+        final String desc = names.size() + " IMG: " + TextUtils.join(", ", names.size() > 6 ? names.subList(0, 6) : names)
+                + (names.size() > 6 ? " +" + (names.size() - 6) + " more" : "");
+        new Thread(() -> {
+            runner.capture("echo " + Runner.q(project) + " > \"$TMPDIR/DNA.ini\"");
+            Menu.Node found = null;
+            try {
+                List<Menu.Node> all = new ArrayList<>();
+                Menu.flatten(Menu.parse(asset("menu/dna.xml")), all);
+                for (Menu.Node x : all)
+                    if (x.type == Menu.ACTION && "Repack super.img".equals(x.title)) { found = x; break; }
+            } catch (Exception ignored) { }
+            final Menu.Node node = found;
+            if (node != null) {
+                for (java.util.Iterator<Menu.Param> it = node.params.iterator(); it.hasNext(); )
+                    if (it.next().name.equals("IMG_NAME")) it.remove();
+                for (Menu.Param pr : node.params) {
+                    if (!pr.valueSh.isEmpty()) {
+                        String v = runner.capture(pr.valueSh).trim();
+                        if (!v.isEmpty()) pr.value = v;
+                    }
+                }
+                node.title = "Repack to super";
+                node.desc = desc;
+            }
+            final Map<String, String> fixed = new LinkedHashMap<>();
+            fixed.put("IMG_NAME", joined);
+            ui.post(() -> {
+                updateHeader();
+                if (node == null) toast("Repack super menu not found");
+                else paramDialog(node, fixed);
+            });
+        }).start();
     }
 
     private int countActionable(Browse b) {
