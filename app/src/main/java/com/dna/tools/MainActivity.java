@@ -17,6 +17,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -47,10 +48,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final int BG = 0xFF0C111E, SURFACE = 0xFF141B2D, SURFACE2 = 0xFF1B2438;
@@ -83,6 +87,21 @@ public class MainActivity extends Activity {
         int count, pct;
         long mtime;
         Menu.Node node;
+        boolean expanded, loading;
+        List<String[]> files;
+    }
+
+    private static final class Sec {
+        String title = "";
+        final List<Menu.Node> items = new ArrayList<>();
+        boolean open;
+    }
+
+    private static final class VRow {
+        static final int TOP = 0, HEADER = 1, ITEM = 2;
+        int kind;
+        Menu.Node node;
+        Sec sec;
     }
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -95,6 +114,8 @@ public class MainActivity extends Activity {
     private BaseAdapter homeAdapter;
     private List<Menu.Node> toolNodes = new ArrayList<>();
     private Menu.Node unzipNode;
+    private final Set<String> expandedSet = new HashSet<>();
+    private final Map<String, List<String[]>> fileCache = new HashMap<>();
     private volatile Runner.Started running;
 
     @Override
@@ -419,7 +440,7 @@ public class MainActivity extends Activity {
         lv.setAdapter(homeAdapter);
         lv.setOnItemClickListener((a, v, pos, id) -> {
             Row r = rows.get(pos);
-            if (r.kind == Row.PROJECT) openProject(r.name);
+            if (r.kind == Row.PROJECT) toggleProject(r);
             else if (r.kind == Row.NODE) onNode(r.node);
         });
         lv.setOnItemLongClickListener((a, v, pos, id) -> {
@@ -486,35 +507,152 @@ public class MainActivity extends Activity {
         FrameLayout wrap = new FrameLayout(this);
         wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
         LinearLayout card = new LinearLayout(this);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        card.setOrientation(LinearLayout.VERTICAL);
         card.setDuplicateParentStateEnabled(true);
         card.setBackground(ripple(SURFACE, 18));
+
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(14), dp(12), dp(10), dp(12));
+        head.setDuplicateParentStateEnabled(true);
         FrameLayout badge = new FrameLayout(this);
         badge.setBackground(rect(0x22FF8282, 14));
         ImageView ic = new ImageView(this);
         ic.setImageResource(R.drawable.ic_folder);
         badge.addView(ic, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
-        card.addView(badge, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        head.addView(badge, new LinearLayout.LayoutParams(dp(46), dp(46)));
+
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(14), 0, dp(8), 0);
-        col.addView(text(display(r.name), 16, TXT, true));
+        LinearLayout nameRow = new LinearLayout(this);
+        nameRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView nm = text(display(r.name), 16, TXT, true);
+        nm.setSingleLine(true);
+        nm.setEllipsize(TextUtils.TruncateAt.END);
+        nameRow.addView(nm, new LinearLayout.LayoutParams(-2, -2, 0f));
+        TextView arrow = text(r.expanded ? "  ▴" : "  ▾", 12, SUB, false);
+        nameRow.addView(arrow);
+        if (active) {
+            TextView t = text("ACTIVE", 9, 0xFF2B0A0A, true);
+            t.setBackground(rect(ACCENT, 8));
+            t.setPadding(dp(6), dp(2), dp(6), dp(2));
+            LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-2, -2);
+            alp.leftMargin = dp(6);
+            nameRow.addView(t, alp);
+        }
+        col.addView(nameRow);
         String date = r.mtime > 0
                 ? new SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(new Date(r.mtime * 1000L)) : "";
         String meta = (r.size.isEmpty() ? "–" : r.size) + "  •  " + r.count + " items" + (date.isEmpty() ? "" : "  •  " + date);
         col.addView(text(meta, 12, SUB, false));
-        card.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
-        if (active) {
-            TextView t = text("ACTIVE", 10, 0xFF2B0A0A, true);
-            t.setBackground(rect(ACCENT, 10));
-            t.setPadding(dp(8), dp(3), dp(8), dp(3));
-            card.addView(t);
-        } else {
-            card.addView(text("›", 22, SUB, false));
-        }
+        head.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView go = text("›", 32, ACCENT, true);
+        go.setGravity(Gravity.CENTER);
+        go.setPadding(0, 0, 0, dp(4));
+        go.setBackground(ripple(SURFACE2, 14));
+        go.setOnClickListener(v -> openProject(r.name));
+        head.addView(go, new LinearLayout.LayoutParams(dp(54), dp(54)));
+        card.addView(head);
+
+        if (r.expanded) card.addView(filesView(r));
         wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
         return wrap;
+    }
+
+    private View filesView(Row r) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), 0, dp(16), dp(12));
+        View line = new View(this);
+        line.setBackgroundColor(SURFACE2);
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(-1, 2);
+        ll.bottomMargin = dp(8);
+        box.addView(line, ll);
+        if (r.loading) {
+            box.addView(text("Loading…", 12, SUB, false));
+        } else if (r.files == null || r.files.isEmpty()) {
+            box.addView(text("Folder is empty", 12, SUB, false));
+        } else {
+            for (String[] f : r.files) {
+                LinearLayout row = new LinearLayout(this);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(0, dp(5), 0, dp(5));
+                if (f[0].equals("M")) {
+                    row.addView(text("… and more", 12, SUB, false));
+                } else {
+                    boolean dir = f[0].equals("D");
+                    TextView mark = text(dir ? "▸" : "•", 12, dir ? ACCENT : SUB, false);
+                    mark.setWidth(dp(18));
+                    row.addView(mark);
+                    TextView nm = text(f[1], 13, TXT, false);
+                    nm.setSingleLine(true);
+                    nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+                    row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
+                    if (!dir) {
+                        long sz = 0;
+                        try { sz = Long.parseLong(f[2].trim()); } catch (Exception ignored) { }
+                        TextView z = text(humanSize(sz), 12, SUB, false);
+                        z.setPadding(dp(10), 0, 0, 0);
+                        row.addView(z);
+                    }
+                }
+                box.addView(row);
+            }
+        }
+        return box;
+    }
+
+    private static String humanSize(long b) {
+        if (b < 1024) return b + " B";
+        double v = b / 1024.0;
+        String[] u = {"KB", "MB", "GB", "TB"};
+        int i = 0;
+        while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+        return String.format(Locale.US, "%.1f %s", v, u[i]);
+    }
+
+    /** Ambil isi folder project (maks 60 entri). Panggil dari background thread. */
+    private List<String[]> fetchFiles(String name) {
+        String out = runner.capture("d=" + Runner.q(name) + "\n"
+                + "cd \"$DNA_DIR/$d\" 2>/dev/null || exit 0\n"
+                + "n=0\n"
+                + "for f in *; do\n"
+                + "  [ -e \"$f\" ] || continue\n"
+                + "  n=$((n+1))\n"
+                + "  if [ $n -gt 60 ]; then echo \"M|more|0\"; break; fi\n"
+                + "  if [ -d \"$f\" ]; then echo \"D|$f|0\"; else echo \"F|$f|$(stat -c %s \"$f\" 2>/dev/null)\"; fi\n"
+                + "done\n");
+        List<String[]> res = new ArrayList<>();
+        for (String line : out.split("\n")) {
+            String[] p = line.split("\\|", 3);
+            if (p.length == 3 && (p[0].equals("D") || p[0].equals("F") || p[0].equals("M"))) res.add(p);
+        }
+        return res;
+    }
+
+    private void toggleProject(Row r) {
+        if (r.expanded) {
+            r.expanded = false;
+            expandedSet.remove(r.name);
+            homeAdapter.notifyDataSetChanged();
+            return;
+        }
+        r.expanded = true;
+        expandedSet.add(r.name);
+        if (fileCache.containsKey(r.name)) r.files = fileCache.get(r.name);
+        r.loading = true;
+        homeAdapter.notifyDataSetChanged();
+        new Thread(() -> {
+            List<String[]> f = fetchFiles(r.name);
+            ui.post(() -> {
+                fileCache.put(r.name, f);
+                r.files = f;
+                r.loading = false;
+                homeAdapter.notifyDataSetChanged();
+            });
+        }).start();
     }
 
     private void reloadHome() {
@@ -542,6 +680,13 @@ public class MainActivity extends Activity {
                         storage.pct = Integer.parseInt(p[3].replace("%", "").trim());
                     }
                 } catch (NumberFormatException ignored) { }
+            }
+            for (Row r : projects) {
+                if (expandedSet.contains(r.name)) {
+                    r.expanded = true;
+                    r.files = fetchFiles(r.name);
+                    fileCache.put(r.name, r.files);
+                }
             }
             Collections.sort(projects, new Comparator<Row>() {
                 @Override public int compare(Row a, Row b) { return Long.compare(b.mtime, a.mtime); }
@@ -579,17 +724,150 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             runner.capture("echo " + Runner.q(name) + " > \"$TMPDIR/DNA.ini\"");
             try {
-                List<Menu.Node> nodes = new ArrayList<>();
+                List<Menu.Node> top = new ArrayList<>();
                 Menu.Node path = new Menu.Node(Menu.TEXT);
                 path.title = "/sdcard/DNA/" + name;
-                nodes.add(path);
-                if (unzipNode != null) nodes.add(unzipNode);
-                nodes.addAll(Menu.parse(asset("menu/dna.xml")));
-                ui.post(() -> push(display(name), list(nodes)));
+                top.add(path);
+                if (unzipNode != null) top.add(unzipNode);
+                List<Menu.Node> body = Menu.parse(asset("menu/dna.xml"));
+                ui.post(() -> push(display(name), sectionList(top, body)));
             } catch (Exception e) {
                 ui.post(() -> toast("Error: " + e));
             }
         }).start();
+    }
+
+    // ---------- menu project: section dropdown ----------
+    private View sectionList(List<Menu.Node> top, List<Menu.Node> body) {
+        List<Menu.Node> flat = new ArrayList<>();
+        Menu.flatten(body, flat);
+        List<Menu.Node> pinned = new ArrayList<>(top);
+        List<Sec> secs = new ArrayList<>();
+        Sec cur = null;
+        for (Menu.Node n : flat) {
+            if (n.type == Menu.GROUP) {
+                cur = new Sec();
+                cur.title = n.title;
+                secs.add(cur);
+            } else if (cur == null) {
+                pinned.add(n);
+            } else {
+                cur.items.add(n);
+            }
+        }
+        for (int i = secs.size() - 1; i >= 0; i--) if (secs.get(i).items.isEmpty()) secs.remove(i);
+        if (!secs.isEmpty()) secs.get(0).open = true;
+
+        ListView lv = new ListView(this);
+        lv.setDivider(null);
+        lv.setDividerHeight(0);
+        lv.setSelector(new ColorDrawable(Color.TRANSPARENT));
+        lv.setClipToPadding(false);
+        lv.setPadding(0, dp(6), 0, dp(24));
+        final SecAdapter ad = new SecAdapter(pinned, secs);
+        lv.setAdapter(ad);
+        lv.setOnItemClickListener((a, v, pos, id) -> {
+            VRow r = ad.vis.get(pos);
+            if (r.kind == VRow.HEADER) {
+                r.sec.open = !r.sec.open;
+                ad.rebuild();
+                ad.notifyDataSetChanged();
+            } else {
+                onNode(r.node);
+            }
+        });
+        return lv;
+    }
+
+    private final class SecAdapter extends BaseAdapter {
+        final List<Menu.Node> top;
+        final List<Sec> secs;
+        final List<VRow> vis = new ArrayList<>();
+
+        SecAdapter(List<Menu.Node> top, List<Sec> secs) {
+            this.top = top;
+            this.secs = secs;
+            rebuild();
+        }
+
+        void rebuild() {
+            vis.clear();
+            for (Menu.Node n : top) {
+                VRow r = new VRow();
+                r.kind = VRow.TOP;
+                r.node = n;
+                vis.add(r);
+            }
+            for (Sec s : secs) {
+                VRow h = new VRow();
+                h.kind = VRow.HEADER;
+                h.sec = s;
+                vis.add(h);
+                if (!s.open) continue;
+                for (Menu.Node n : s.items) {
+                    VRow r = new VRow();
+                    r.kind = VRow.ITEM;
+                    r.node = n;
+                    r.sec = s;
+                    vis.add(r);
+                }
+            }
+        }
+
+        @Override public int getCount() { return vis.size(); }
+        @Override public Object getItem(int i) { return vis.get(i); }
+        @Override public long getItemId(int i) { return i; }
+        @Override public boolean isEnabled(int i) {
+            VRow r = vis.get(i);
+            if (r.kind == VRow.HEADER) return true;
+            return r.node.type == Menu.ACTION || r.node.type == Menu.PAGE;
+        }
+
+        @Override public View getView(int i, View cv, ViewGroup parent) {
+            VRow r = vis.get(i);
+            if (r.kind == VRow.TOP) return nodeView(r.node);
+            if (r.kind == VRow.HEADER) return headerView(r.sec);
+            return itemView(r.node);
+        }
+    }
+
+    private View headerView(Sec s) {
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
+        LinearLayout card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(16), dp(15), dp(16), dp(15));
+        card.setDuplicateParentStateEnabled(true);
+        card.setBackground(ripple(SURFACE, 16));
+        TextView t = text(s.title, 15, TXT, true);
+        card.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView cnt = text(String.valueOf(s.items.size()), 12, SUB, false);
+        cnt.setBackground(rect(SURFACE2, 10));
+        cnt.setPadding(dp(9), dp(2), dp(9), dp(2));
+        card.addView(cnt);
+        TextView chev = text(s.open ? "▴" : "▾", 14, ACCENT, true);
+        chev.setPadding(dp(12), 0, 0, 0);
+        card.addView(chev);
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
+    private View itemView(Menu.Node n) {
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(dp(30), dp(3), dp(14), dp(3));
+        LinearLayout card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(14), dp(12), dp(12), dp(12));
+        card.setDuplicateParentStateEnabled(true);
+        card.setBackground(ripple(SURFACE2, 12));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.addView(text(n.type == Menu.TEXT ? n.title.trim() : n.title, 14, TXT, false));
+        if (!n.desc.isEmpty()) col.addView(text(n.desc, 12, SUB, false));
+        card.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+        if (n.type == Menu.PAGE) card.addView(text("›", 20, SUB, false));
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
+        return wrap;
     }
 
     private void newProjectDialog() {
