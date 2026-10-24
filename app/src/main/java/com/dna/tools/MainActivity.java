@@ -1441,6 +1441,7 @@ public class MainActivity extends Activity {
         String root, cur;
         boolean loading, failed;
         List<String> dirs = new ArrayList<>();
+        List<String[]> files = new ArrayList<>();
         int gen;   // hasil load yang sudah basi diabaikan
 
         Explorer(int mode, String src, boolean move, String startRoot) {
@@ -1470,6 +1471,7 @@ public class MainActivity extends Activity {
             loading = true;
             failed = false;
             dirs = new ArrayList<>();
+            files = new ArrayList<>();
             final int g = ++gen;
             render();
             new Thread(() -> {
@@ -1479,20 +1481,36 @@ public class MainActivity extends Activity {
                         + "  [ -d \"$f\" ] || continue\n"
                         + "  n=$((n+1)); [ $n -le 400 ] || break\n"
                         + "  echo \"D|$f\"\n"
+                        + "done\n"
+                        + "n=0\n"
+                        + "for f in * .[!.]* ..?*; do\n"
+                        + "  [ -d \"$f\" ] && continue\n"
+                        + "  [ -e \"$f\" ] || [ -L \"$f\" ] || continue\n"
+                        + "  n=$((n+1)); [ $n -le 400 ] || break\n"
+                        + "  echo \"F|$f|$(stat -c %s \"$f\" 2>/dev/null)\"\n"
                         + "done\n");
                 final List<String> res = new ArrayList<>();
+                final List<String[]> fres = new ArrayList<>();
                 boolean bad = false;
                 for (String l : out.split("\n")) {
                     if (l.equals("X")) bad = true;
                     else if (l.startsWith("D|") && l.length() > 2) res.add(l.substring(2));
+                    else if (l.startsWith("F|") && l.length() > 2) {
+                        String[] fp = l.substring(2).split("\\|(?=[0-9]*$)", 2);
+                        long sz = 0;
+                        try { sz = Long.parseLong(fp.length > 1 ? fp[1].trim() : "0"); } catch (Exception ignored) { }
+                        if (!fp[0].isEmpty()) fres.add(new String[]{fp[0], humanSize(sz)});
+                    }
                 }
                 Collections.sort(res, String.CASE_INSENSITIVE_ORDER);
+                Collections.sort(fres, (x, y) -> x[0].compareToIgnoreCase(y[0]));
                 final boolean fb = bad;
                 ui.post(() -> {
                     if (g != gen) return;
                     loading = false;
                     failed = fb;
                     dirs = res;
+                    files = fres;
                     render();
                 });
             }).start();
@@ -1519,6 +1537,25 @@ public class MainActivity extends Activity {
             nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
             row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
             row.setOnClickListener(x -> click.run());
+            return row;
+        }
+
+        /** File ditampilkan redup (hanya info, tidak bisa dibuka) supaya isi folder kelihatan. */
+        private View fileRow(String name, String size) {
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(6), dp(9), dp(6), dp(9));
+            TextView m = text("•", 14, SUB, false);
+            m.setWidth(dp(22));
+            row.addView(m);
+            TextView nm = text(name, 13, SUB, false);
+            nm.setSingleLine(true);
+            nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView sz = text(size, 11, SUB, false);
+            sz.setPadding(dp(8), 0, 0, 0);
+            row.addView(sz);
+            row.setAlpha(0.7f);
             return row;
         }
 
@@ -1594,8 +1631,12 @@ public class MainActivity extends Activity {
             if (!cur.equals(root)) list.addView(row("..", true, () -> up()));
             if (loading) list.addView(note("Loading…"));
             else if (failed) list.addView(note("Cannot open this folder"));
-            else if (dirs.isEmpty()) list.addView(note("No subfolders"));
-            else for (String d : dirs) list.addView(row(d, false, () -> go(cur + "/" + d)));
+            else if (dirs.isEmpty() && files.isEmpty()) list.addView(note("Empty folder"));
+            else {
+                for (String d : dirs) list.addView(row(d, false, () -> go(cur + "/" + d)));
+                if (dirs.isEmpty()) list.addView(note("No subfolders"));
+                for (String[] f : files) list.addView(fileRow(f[0], f[1]));
+            }
             box.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
 
             Button b;
