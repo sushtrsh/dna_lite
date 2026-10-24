@@ -365,7 +365,7 @@ public class MainActivity extends Activity {
         }
         if (stack.size() > 1) {
             Screen top = stack.get(stack.size() - 1);
-            if (top.editor != null && top.editor.isDirty()) {
+            if (top.editor != null && top.editor.hasChanges()) {
                 confirmDiscard();
                 return;
             }

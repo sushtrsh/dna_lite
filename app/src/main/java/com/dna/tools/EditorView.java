@@ -87,7 +87,7 @@ final class EditorView extends LinearLayout {
         highlight();
     }
 
-    boolean isDirty() {
+    boolean hasChanges() {
         return dirty;
     }
 
