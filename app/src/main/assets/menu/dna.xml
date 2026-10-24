@@ -1,0 +1,437 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<group title="Plugin Functions">
+    <page config-sh="samples/modun.sh" title="Plugin Functions" desc="Local plugins can be imported using file.zip2">
+        <option type="file" style="fab" suffix="zip2" auto-off="true" reload="true"/>
+        <handler>
+            dna unzip $file $START_DIR/module
+        </handler>
+    </page>
+</group>
+
+<group title="Unpacking Menu">
+    <action interruptible="false">
+        <title>Unpack bin</title>
+        <set>dna dumper --partition "$img" --delete $silence --auto $auto $DNA_PRO/payload.bin</set>
+        <param name="silence" label="Delete source file" type="checkbox" />
+        <param name="auto" label="Automatically unpack extracted IMG" type="checkbox" />
+        <param name="img" title="Select partitions to extract (leave empty to extract all):" separator="," options-sh="dna dumper --list $DNA_PRO/payload.bin" multiple="true"/>
+        <lock>
+            if [[ -f $DNA_PRO/payload.bin ]]; then
+                echo 'unlocked'
+            else
+                echo 'Not found: payload.bin'
+            fi
+        </lock>
+    </action>
+
+    <action interruptible="false">
+        <title>Unpack br</title>
+        <set>dna extract $BR --delete $silence</set>
+        <param name="silence" label="Delete source file" type="checkbox" />
+        <param name="BR" title="Select BR files (multi-select supported):" separator="," options-sh="samples/findfile.sh br" desc="Scans for files in /sdcard/DNA project path" required="true" multiple="true"/>
+    </action>
+
+    <action interruptible="false">
+        <title>Unpack dat</title>
+        <set>dna extract $DAT --delete $silence</set>
+        <param name="silence" label="Delete source file" type="checkbox" />
+        <param name="DAT" title="Select DAT files (multi-select supported):" separator="," options-sh="samples/findfile.sh dat" desc="Scans for files in /sdcard/DNA project path" required="true" multiple="true"/>
+    </action>
+
+    <action interruptible="false">
+        <title>Unpack img</title>
+        <set>dna extract $IMG --delete $silence</set>
+        <param name="silence" title="Delete source file?" label="Delete source file" type="checkbox" />
+        <param name="IMG" title="Select IMG files (multi-select supported):" separator="," options-sh="samples/findfile.sh img" desc="Scans for files in /sdcard/DNA project path; tool auto-detects IMG format. For super.img, only 'a' partition will be extracted." required="true" multiple="true"/>
+    </action>
+    
+    <action interruptible="false">
+    <title>Unpack zstd</title>
+    <set>$START_DIR/samples/u_zstd_img.sh</set>
+
+    <param name="silence" label="Delete source file after extraction" type="checkbox" />
+
+    <param name="ZST" title="Select .zst or .zstd files:"
+        options-sh="samples/findfile.sh u_zst_img"
+        desc="Scans files under /sdcard/DNA project path"
+        required="true" multiple="true" />
+</action>
+
+    <action interruptible="false">
+        <title>Unpack super</title>
+        <set>dna lpunpack --partition "$img" --delete $silence --auto $auto $DNA_PRO/super.img</set>
+        <param name="silence" label="Delete source file" type="checkbox" />
+        <param name="auto" label="Automatically unpack extracted IMG" type="checkbox" />
+        <param name="img" title="Select partitions to extract (leave empty to extract all):" separator="," options-sh="dna lpunpack --list $DNA_PRO/super.img" multiple="true"/>
+        <lock>
+            if [[ -f $DNA_PRO/super.img ]]; then
+                echo 'unlocked'
+            else
+                echo 'Not found: super.img'
+            fi
+        </lock>
+    </action>
+</group>
+
+<group title="Repacking Menu">
+<action interruptible="false">
+    <title>Resize img partition</title>
+    <set>
+        project=$(cat $TMPDIR/DNA.ini)
+        DNA_PRO=$DNA_DIR/$project
+        DNA_OUT=$DNA_PRO/out
+
+        # Ensure output folder exists
+        mkdir -p "$DNA_OUT"
+
+        # Loop through selected images
+        for img_file in $(echo "$img" | tr ',' '\n'); do
+            echo "Resizing $DNA_PRO/$img_file with +${extra_size}MB"
+
+            # Append zero bytes to increase size
+            dd if=/dev/zero bs=1M count="$extra_size" >> "$DNA_PRO/$img_file"
+
+            # Resize filesystem on the image
+            resize2fs "$DNA_PRO/$img_file" || echo "Warning: resize2fs failed on $img_file"
+
+            # Copy resized image to output folder
+            cp -f "$DNA_PRO/$img_file" "$DNA_OUT/$img_file"
+            echo "Output copied to $DNA_OUT/$img_file"
+        done
+    </set>
+    <param name="extra_size" label="Extra Space (MB)" value="200" type="text"/>
+    <param name="img" title="Select .img files to resize:"
+           separator="," multiple="true" required="true"
+           options-sh="samples/findfile.sh img"
+           desc="Detects .img files under /sdcard/DNA project path"/>
+</action>
+
+    <action interruptible="false">
+        <title>Repack single img partition</title>
+<set>dna repack $IMG_DIR --read $Read --auto $Pack --format $img_type --type $repack_from --br $brze --erofs $erofsze --mode $type --compress $test --delavb $test1 --convert $tool</set>
+        <param name="IMG_DIR" options-sh="samples/findfile.sh dir" desc="Supports multiple repacking; tool will automatically detect image format" separator="," required="true" multiple="true"/>
+        <param name="tool" label="Packing Method">
+             <option value="0"> ext4 </option>
+             <option value="1"> erofs </option>
+             <option value="2"> f2fs </option>
+        </param>
+        <param name="Read" label="Partition Access" desc="Note: Only applicable when packing ext4">
+             <option value="1">Read/Write ---rw</option>
+             <option value="0">Read-Only ---ro</option>
+        </param>
+        <param name="Pack" label="Packing Size" desc="Note: Only applicable when packing ext4">
+
+             <option value="1">Auto Calculate Size</option>
+             <option value="0">Use Original img Size</option>
+        </param>
+        <param name="img_type" label="Packing Format" desc="Note: Only applicable when packing ext4/erofs">
+             <option value="0">Recovery Flashable Format ---raw</option>
+             <option value="1">Fastboot Format ---sparse</option>
+        </param>
+        <param name="repack_from" label="Repack From" desc="Note: Only applicable when packing ext4/erofs">
+             <option value="0">IMG</option>
+             <option value="1">DAT</option>
+             <option value="2">BR</option>
+        </param>
+        <param name="brze" label="BR Compression Level" value="3" desc="Note: Only applies when repacking to BR; higher = slower" type="seekbar" max="7" min="1"/>
+        <param name="erofsze" label="EROFS Level" value="8" desc="Only applies when repacking to EROFS or F2FS" type="seekbar" max="9" min="0"/>
+        <param name="type" label="EROFS Compression Method" desc="Note: Only applies when packing EROFS">
+             <option value="lz4hc">lz4hc</option>
+             <option value="lz4">lz4</option>
+             <option value="lzma">lzma</option>
+        </param>
+        <param name="test" label="Compress ext4 Image Size" desc="Note: This switch only affects ext4 image repacking" type="switch" />
+        <param name="test1" label="Remove AVB, Data Encryption" desc="Note: This will modify fstab. May cause boot failure on some devices" type="switch" />
+    </action>
+    
+        <action interruptible="false">
+        <title>Repack zstd</title>
+        <set>$START_DIR/samples/zstd_img.sh</set>
+        <param name="silence" label="Delete source file" type="checkbox" />
+        <param name="ZST" title="Please select files:" 
+           options-sh="samples/findfile.sh zst_img" 
+           desc="Detect files under /sdcard/DNA project path" 
+           required="true" multiple="true"/>
+        <param name="level" required="true" value="3" label="ZSTD Compression Level" desc="Note: Higher number means slower compression, choose wisely!" type="seekbar" max="19" min="0"/>
+    </action>
+
+    <action interruptible="false">
+        <title>Repack super.img</title>
+        <set>dna lpmake --type $type --format $from --super_size $size --super_group $super_group $IMG_NAME</set>
+        <param name="type" label="Packing Type">
+             <option value="A"> a_only</option>
+             <option value="AB"> ab</option>
+             <option value="VAB"> virtual_ab</option>
+        </param>
+        <param name="from" label="Packing Format">
+             <option value="1"> sparse </option>
+             <option value="0"> raw </option>
+        </param>
+        <param name="size" required="true" value="8.5" value-sh="samples/supersize.sh" label="super.img Total Size" desc="Enter in GB. Default: 8.5GB" type="float"/>
+        <param name="super_group" required="true" value="qti_dynamic_partitions" label="Dynamic Partition Group Name" desc="Use default if unsure" />
+        <param name="IMG_NAME" title="Select IMG files to pack:" options-sh="samples/findfile.sh img" desc="Detects files from /sdcard/DNA project path" separator="," required="true" multiple="true"/>
+    </action>
+</group>
+
+<group title="Format Conversion">
+    <action interruptible="false">
+        <title>img-simg Conversion</title>
+        <set>samples/img_ov_simg.sh</set>
+        <param name="IMG" title="Please select IMG files (multiple selection supported):" separator=" " options-sh="samples/findfile.sh img" desc="Detect files under /sdcard/DNA project path" required="true" multiple="true"/>
+    </action>
+
+    <action interruptible="false">
+        <title>img-dat-br Conversion</title>
+        <set>dna convert $IMG --delete $silence --type $from --br $brze</set>
+        <param name="silence" title="Delete source file?" label="Delete source file" type="checkbox" />
+        <param name="from" label="Conversion Type" >
+             <option value="0">DAT</option>
+             <option value="1">BR</option>
+        </param>
+        <param name="brze" required="true" value="3" label="BR Compression Level" desc="Note: Higher number means slower compression, choose wisely!" type="seekbar" max="7" min="1"/>
+        <param name="IMG" title="Please select IMG files (multiple selection supported):" separator="," options-sh="samples/findfile.sh img" desc="Detect files under /sdcard/DNA project path" required="true" multiple="true"/>
+    </action>   
+    
+    <action>
+        <title>Merge splited img into super.img</title>
+    <set>
+     chmod +x "$START_DIR/tools/merge_superchunk"
+     "$START_DIR/tools/merge_superchunk"
+    </set>
+        <desc>Restore the original super.img</desc>
+        <param name="silence" label="Delete source file" type="checkbox" />
+        <param name="IMG" title="Please select segmented IMG files" 
+            options-sh="samples/findfile.sh split_sparse" 
+            desc="Detect files under /sdcard/DNA project path" 
+            required="true" multiple="true"/>
+    </action>
+    
+<action>
+    <title>Split super.img into parts</title>
+    
+   <set>
+     chmod +x "$START_DIR/tools/seprate_superchunk"
+     "$START_DIR/tools/seprate_superchunk"
+   </set>
+   
+    <desc>Sparse super.img into evenly sized parts</desc>
+
+    <!-- Optional deletion of original file -->
+    <param name="silence" label="Delete source file" type="checkbox" />
+
+    <!-- File selector -->
+    <param name="IMG" title="Please select super.img" 
+           options-sh="samples/findfile.sh img" 
+           desc="Detect .img files under /sdcard/DNA project path" 
+           required="true" multiple="true"/>
+
+    <!-- Clean dropdown for number of parts -->
+    <param name="parts" title="Select number of parts (4 to 25):" 
+           desc="Split the selected super.img into evenly sized chunks" 
+           type="select" required="true">
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+        <option value="7">7</option>
+        <option value="8">8</option>
+        <option value="9">9</option>
+        <option value="10">10</option>
+        <option value="11">11</option>
+        <option value="12" selected="true">12</option>
+        <option value="13">13</option>
+        <option value="14">14</option>
+        <option value="15">15</option>
+        <option value="16">16</option>
+        <option value="17">17</option>
+        <option value="18">18</option>
+        <option value="19">19</option>
+        <option value="20">20</option>
+        <option value="21">21</option>
+        <option value="22">22</option>
+        <option value="23">23</option>
+        <option value="24">24</option>
+        <option value="25">25</option>
+    </param>
+</action>
+
+<group title="Jar Menu">
+<action>
+  <title>Core patch - DSV</title>
+  <desc>Enables direct installation of system applications by bypassing complete signature verification</desc>
+  <set>
+    if [ "$android_version" = "A13+" ]; then
+      chmod +x "$START_DIR/tools/dsv_a13+"
+      "$START_DIR/tools/dsv_a13+"
+    elif [ "$android_version" = "A15+" ]; then
+      chmod +x "$START_DIR/tools/dsv_a15+"
+      "$START_DIR/tools/dsv_a15+" "$disable_invoke_custom"
+    fi
+  </set>
+
+  <param name="android_version"
+         title="Select Android Version:"
+         desc="Choose Android version"
+         type="select" required="true">
+    <option value="A13+">Android 13+</option>
+    <option value="A15+">Android 15+</option>
+  </param>
+
+  <param name="disable_invoke_custom"
+         label="Remove invoke-custom"
+         desc="Disables invoke-custom usage in equals, hashCode, and toString smali methods. Only applicable to Android 15+."
+         type="checkbox"
+         default="false" />
+</action>
+
+<action>
+  <title>Remove Apk Protection</title>
+  <desc>Disables built-in APK protection in stock ROMs, allowing seamless replacement of modified system applications</desc>
+  <set>
+    if [ "$android_version" = "A13+" ]; then
+      chmod +x "$START_DIR/tools/apk_protection_a13+"
+      "$START_DIR/tools/apk_protection_a13+"
+    elif [ "$android_version" = "A15+" ]; then
+      chmod +x "$START_DIR/tools/apk_protection_a15+"
+      "$START_DIR/tools/apk_protection_a15+" "$disable_invoke_custom"
+    fi
+  </set>
+
+  <param name="android_version"
+         title="Select Android Version:"
+         desc="Choose Android version"
+         type="select" required="true">
+    <option value="A13+">Android 13+</option>
+    <option value="A15+">Android 15+</option>
+  </param>
+
+  <param name="disable_invoke_custom"
+         label="Remove invoke-custom"
+         desc="Disable invoke-custom usage in equals/hashCode/toString smali methods. Only applies to Android 15+."
+         type="checkbox"
+         default="false" />
+</action>
+
+<action>
+  <title>Disable secure screenshot</title>
+  <desc>This removes the screenshots and screenrecords limits for all applications. Normally, special applications are replaced with black areas in records. This can be convenient in some cases but may lead to privacy leaks.
+  </desc>
+  <set>
+    if [ "$android_version" = "A13+" ]; then
+      chmod +x "$START_DIR/tools/dss_a13+"
+      "$START_DIR/tools/dss_a13+"
+    elif [ "$android_version" = "A15+" ]; then
+      chmod +x "$START_DIR/tools/dss_a15+"
+      "$START_DIR/tools/dss_a15+" "$disable_invoke_custom"
+    fi
+  </set>
+
+  <param name="android_version" title="Select Android Version:"
+         desc="Choose Android version"
+         type="select" required="true">
+    <option value="A13+">Android 13+</option>
+    <option value="A15+">Android 15+</option>
+  </param>
+
+  <param name="disable_invoke_custom"
+         label="Remove invoke-custom"
+         desc="Disable invoke-custom usage in smali (only for Android 15+)"
+         type="checkbox"
+         default="false" />
+</action>
+</group>
+
+<group title="Patch Menu">
+<action>
+    <title>Patch vbmeta</title>
+   <set>
+     chmod +x "$START_DIR/tools/patch_vbmeta"
+     "$START_DIR/tools/patch_vbmeta"
+   </set>
+    <param name="silence" label="Delete source file" type="checkbox" />
+
+    <param name="PATCH_TYPE" title="Select vbmeta Patch Type"
+           desc="Choose the type of patch to apply to vbmeta.img"
+           type="select">
+        <option value="verity">Disable dm-verity</option>
+        <option value="verification">Disable dm-verification</option>
+        <option value="both">Disable both</option>
+    </param>
+
+    <param name="IMG" title="Select vbmeta IMG files to patch"
+           options-sh="samples/findfile.sh vbmeta"
+           desc="Select vbmeta image files under /sdcard/DNA project path"
+           required="true" multiple="true"/>
+</action>
+<action>
+   <title>Integrity fix</title>
+   <desc>Changing device fingerprint to Pixel 7 Pro</desc>
+   <set>
+     chmod +x "$START_DIR/tools/integrityfix"
+     "$START_DIR/tools/integrityfix"
+   </set>
+</action>
+<action>
+   <title>Patch SafetyCore</title>
+   <desc>Patch Google spyware by adding a SafetyCore placeholder.</desc>
+   <set>$START_DIR/samples/safetycore.sh</set> 
+</action>
+
+<action>
+   <title>Patch Priv-App Permissions</title>
+   <desc>Removing ro.control_privapp_permissions skips priv-app permissions enforcement, ignoring privapp-permissions.xml rules</desc>
+   <set>$START_DIR/samples/patch_enforce.sh</set> 
+</action>
+ <action>
+        <title>Disable OTA Update</title>
+        <desc>This will disable automatic OTA updates on your ROM, stop the system from downloading and updates by default</desc>
+        <set>$START_DIR/samples/remove_ota_update.sh</set>
+    </action>
+    <action>
+   <title>Disable xiaomi services</title>
+   <desc>Freeing background processes for better performance and system optimization</desc>
+   <set>
+     chmod +x "$START_DIR/tools/xiaomi_tweaks"
+     "$START_DIR/tools/xiaomi_tweaks"
+   </set>
+</action>
+</group>
+        <group title="Rom Menu">
+<action>
+  <title>Debloat Miui/HyperOs</title>
+  <desc>Debloat Works on all MIUI versions 13/14 and HyperOS releases 1.0/2.0/2.0.2 safely removing bloatware to boost performance and free resources</desc>
+  <set>
+    if [ "$rom_type" = "Global" ]; then
+      chmod +x "$START_DIR/tools/debloat_gl"
+      "$START_DIR/tools/debloat_gl"
+    elif [ "$rom_type" = "China" ]; then
+      chmod +x "$START_DIR/tools/debloat_cn"
+      "$START_DIR/tools/debloat_cn"
+    fi
+</set>
+
+<param name="rom_type" title="Select ROM Type:"
+         type="select" required="true">
+    <option value="Global">Miui/HyperOs Global</option>
+    <option value="China">Miui/HyperOs China</option>
+  </param>
+</action>
+
+<action>
+   <title>Remove oat</title>
+   <desc>Delete the `oat` folder to free up space and prevent optimized ART files from being used</desc>
+   <set>$START_DIR/samples/rm_oat.sh</set>
+   </action>
+        
+        <action>
+        <title>Make full Rom-RW</title>
+        <desc>Enables full read-write access to ROM, allowing modifications and customization</desc>
+        <set>$START_DIR/samples/rw_full_rom.sh</set>
+    </action>  
+        <action>
+        <title>Rom decryption</title>
+        <desc>By modifying fstab, allowing dirty flash</desc>
+        <set>$START_DIR/samples/decrypt_rom.sh</set>
+           </action>
+           </group>
+</group>
+

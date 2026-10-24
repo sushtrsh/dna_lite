@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<root>
+    <group title="Special Thanks, in no particular order, please remind if any are missed">
+        <page link="https://github.com/helloklf/kr-scripts">
+            <title>"kr-scripts", Github: helloklf | CoolAPK: Dudu Siji</title>
+            <desc>This software is made based on the "kr-scripts" framework, original software name: "PIO"</desc>
+        </page>
+        <page link="">
+            <title>TIK Toolbox Official Group</title>
+            <desc>Thanks to the group members for testing and help, not listing individually</desc>
+        </page>
+        <page link="https://gitee.com/yeliqin666/TIK">
+            <title>TIK Toolbox</title>
+            <desc>Some code comes from the TIK2 source code, thanks here</desc>
+        </page>
+        <page link="https://github.com/topjohnwu/Magisk">
+            <title>magiskboot</title>
+        </page>
+        <page link="https://github.com/xpirt">
+           <title>sdat2img and img2sdat</title>
+        </page>
+        <page link="https://github.com/sekaiacg/erofs-extract">
+           <title>erofs-extract</title>
+        </page>
+        <page link="https://gitee.com/sharpeter/DNA">
+           <title>DNA</title>
+           <desc>Uses the name of the DNA Toolbox by the great @Gentle Mercy, respect to the master!</desc>
+        </page>
+        <page link="">
+           <title>Gaoji Assistant</title>
+           <desc>Original author of Gaoji Assistant @情非得已c, extracted some code files for use!</desc>
+        </page>
+        <page link="https://github.com/affggh/fspatch">
+           <title>affggh</title>
+           <desc>Using @affggh’s fspatch.py to patch permission files and other open-source tools on GitHub</desc>
+        </page>
+    </group>
+
+</root>

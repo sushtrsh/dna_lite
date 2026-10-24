@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<group>
+    <action auto-off="true">
+          <title>Select Project</title>
+          <set>echo $TSL > $TMPDIR/DNA.ini</set>
+          <summary sh="echo 'Current project: /sdcard/DNA' ;cat $TMPDIR/DNA.ini"/>
+          <param name="TSL" options-sh="samples/project.sh CK" required="true"/>
+    </action>
+   
+    <action reload="true" auto-off="true">
+           <title>Delete Project</title>
+           <set>samples/project.sh SC</set>
+           <param name="TSS"  multiple="true" options-sh="samples/project.sh CK" required="true"/>
+    </action>
+    
+    <action reload="true" auto-off="true">
+           <title>Create New Project</title>
+           <set>samples/project.sh XJ</set>
+           <param name="T" placeholder="Please enter project name (non-Chinese):" required="true"/>
+    </action>
+    
+    <action reload="true" interruptible="false">
+           <title>Unzip ROM</title>
+           <set>dna unzip --delete $silence $DNA_DIR/$ZIP $DNA_DIR</set>
+           <param name="silence" label="Delete source file" type="checkbox" />
+           <param name="ZIP" title="Please select zip file:" options-sh="samples/findfile.sh zip1" desc="Recognizes files under /sdcard/DNA project path" required="true"/>
+    </action>
+
+    <page title="Project Menu" config="dna.xml">
+            <lock>
+                if [[ -f $TMPDIR/DNA.ini ]]; then
+                    echo 'unlocked'
+                else
+                    echo 'You didn’t select a project, you are messing around! (literal: You disassemble a chicken!)'
+                fi
+            </lock>
+    </page>
+</group>
+
+<group>
+    <text>
+        <slices>
+            <slice size="18" color="#ffffffff">Disclaimer</slice>
+            <slice break="true"></slice>
+            <slice size="10" color="#ffffffff">This tool will not actively damage the phone system, all consequences caused by improper use are borne by the user</slice>
+            <slice break="true"></slice>
+            <slice size="10" color="#ffffffff">In one sentence: Use it if you love it, uninstall if you don’t</slice>
+            <slice break="true"></slice>
+            <slice size="10" color="#ffffffff">If you find problems using it on your phone, please contact me to fix it, QQ: 903501507</slice>
+            <slice break="true"></slice>
+            <slice size="10" color="#FFFFFF">Moded By @SoutaEver</slice>
+        </slices>
+    </text>
+</group>

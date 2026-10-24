@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<group title="Partition Management">
+    <action>
+        <title>Extract Image File</title>
+        <set>samples/image.sh extract</set>
+        <param name="IMG" title="Please select partitions (multiple selection supported):" multiple="true" options-sh="samples/image.sh name" required="true"/>
+    </action>
+    
+    <action>
+        <title>Flash Image File</title>
+        <set>samples/image.sh flash</set>
+        <param name="CQ" label="Auto reboot system on successful flash" type="checkbox" />
+        <param name="CQ1" label="Auto reboot to Recovery on successful flash" type="checkbox" />
+        <param name="IMG" title="Note: Please do not flash system or similar system partitions" options-sh="samples/image.sh name" required="true"/>
+        <param name="Brush_in" type="file" suffix="img" editable="true" required="true" title="You can enter the absolute path of the img file or use the file picker to select the file" desc="Friendly tip: You can use 'MT Manager' to long-press a folder or file → Properties → Click the folder to copy absolute folder path, long-press folder or name to copy absolute file path"/>
+    </action>
+</group>
+
+<group>
+    <action>
+        <title>Script Executor</title>
+        <summary>Custom Command</summary>
+        <set>samples/shell.sh</set>
+        <param name="TO" placeholder="Custom command" value-sh="cat $START_DIR/SHE.sh" required="true" />
+    </action>
+</group>
+
+<group title="About Tools">
+    <page title="Special Thanks" config="thank.xml" />
+</group>

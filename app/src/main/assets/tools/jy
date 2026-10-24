@@ -1,0 +1,14 @@
+#!/bin/sh
+
+PATH=${0%/*}:$PATH
+#mount -o rw,remount /
+#mount -o rw,remount /cust
+
+JY(){
+cd $(dirname $1) && tar -xf $(basename $1) -C "$2"
+}
+if [[ "$1" = "--help" ]]; then
+  echo 'JY [Compressed file absolute address] [Unzipped folder location]'
+elif [[ "$1" != "" ]] && [[ "$2" != "" ]]; then
+  JY "$1" "$2"
+fi
