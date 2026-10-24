@@ -286,7 +286,7 @@ public class MainActivity extends Activity {
                 LinearLayout card = new LinearLayout(MainActivity.this);
                 card.setGravity(Gravity.CENTER_VERTICAL);
                 card.setPadding(dp(14), dp(14), dp(14), dp(14));
-                card.setDuplicateParentState(true);
+                card.setDuplicateParentStateEnabled(true);
                 if (n.type == Menu.TEXT) {
                     card.setBackground(rect(SURFACE, 16));
                     card.addView(text(n.title.trim(), 12, SUB, false));
