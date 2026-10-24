@@ -904,33 +904,54 @@ public class MainActivity extends Activity {
                 + "for f in *; do\n"
                 + "  [ -d \"$f\" ] || continue\n"
                 + "  n=$((n+1)); [ $n -le 80 ] || break\n"
-                + "  echo \"D|$f|$(ls -A \"$f\" 2>/dev/null | wc -l | tr -d ' ')\"\n"
+                + "  c=0\n"
+                + "  for x in \"$f\"/* \"$f\"/.[!.]* \"$f\"/..?*; do [ -e \"$x\" ] && c=$((c+1)); done\n"
+                + "  echo \"D|$f|$c\"\n"
                 + "done\n"
-                + "for f in *; do\n"
-                + "  [ -d \"$f\" ] && continue\n"
-                + "  [ -e \"$f\" ] || continue\n"
-                + "  n=$((n+1)); [ $n -le 80 ] || break\n"
-                + "  echo \"F|$f|$(stat -c %s \"$f\" 2>/dev/null)\"\n"
-                + "done\n"
+                + "fl=$(find -L . -maxdepth 1 ! -type d ! -name '.*' -exec stat -L -c 'F|%n|%s' {} + 2>/dev/null | sort)\n"
+                + "room=$((80-n)); [ $room -lt 0 ] && room=0\n"
+                + "if [ -n \"$fl\" ]; then\n"
+                + "  t=$(printf '%s\\n' \"$fl\" | wc -l)\n"
+                + "  printf '%s\\n' \"$fl\" | head -n $room\n"
+                + "  [ $t -gt $room ] && echo \"M|more|0\"\n"
+                + "fi\n"
                 + "[ $n -gt 80 ] && echo \"M|more|0\"\n");
         List<String[]> res = new ArrayList<>();
         for (String line : out.split("\n")) {
             String[] p = line.split("\\|", 3);
-            if (p.length == 3 && (p[0].equals("D") || p[0].equals("F") || p[0].equals("M"))) res.add(p);
+            if (p.length == 3 && (p[0].equals("D") || p[0].equals("F") || p[0].equals("M"))) {
+                if (p[0].equals("F") && p[1].startsWith("./")) p[1] = p[1].substring(2);
+                res.add(p);
+            }
         }
         b.files = res;
     }
 
     /** Baca ulang isi folder di background; tampilan lama tetap sampai data baru siap, lalu diganti dengan animasi. */
     private void reloadDir(Row r) {
+        reloadDir(r, false);
+    }
+
+    private static boolean sameFiles(List<String[]> a, List<String[]> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) if (!java.util.Arrays.equals(a.get(i), b.get(i))) return false;
+        return true;
+    }
+
+    /** silent = tampilan sudah menampilkan isi (cache); kalau hasil baru sama, tidak perlu animasi ulang. */
+    private void reloadDir(Row r, boolean silent) {
         final Browse b = r.b;
-        b.sel.clear();
-        b.selMode = false;
+        if (!silent) {
+            b.sel.clear();
+            b.selMode = false;
+        }
         new Thread(() -> {
+            final List<String[]> before = b.files;
             loadDir(r.name, b);
+            final boolean same = silent && sameFiles(before, b.files);
             ui.post(() -> {
                 b.loading = false;
-                refreshFiles(r);
+                if (!same) refreshFiles(r);
             });
         }).start();
     }
@@ -956,9 +977,10 @@ public class MainActivity extends Activity {
             return;
         }
         b.open = true;
-        b.loading = true;
-        refreshFiles(r);   // buka langsung dengan "Loading…", isi menyusul
-        reloadDir(r);
+        final boolean cached = !b.files.isEmpty();
+        b.loading = !cached;
+        refreshFiles(r);   // buka langsung (cache kalau ada), data terbaru menyusul
+        reloadDir(r, cached);
     }
 
     private void rotateArrow(Browse b) {
