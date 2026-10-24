@@ -3,6 +3,11 @@ package com.dna.tools;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -33,6 +38,8 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
+import android.view.Window;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
@@ -45,6 +52,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
@@ -115,6 +123,8 @@ public class MainActivity extends Activity {
         boolean hasUnpacked;
         int uCount;
         long freeBytes;
+        Runnable act;      // tombol aksi di empty state
+        String actLabel = "";
     }
 
     private static final class Browse {
@@ -122,6 +132,8 @@ public class MainActivity extends Activity {
         int base;   // 0 = /sdcard/DNA/<project>, 1 = hasil unpack di /data/DNA/<project>
         String abs; // kalau diisi: folder yang di-pin (path absolut), base diabaikan
         final List<String> sub = new ArrayList<>();
+        final Set<String> sel = new HashSet<>();   // multi-select
+        boolean selMode;
         List<String[]> files = new ArrayList<>();
     }
 
@@ -137,6 +149,7 @@ public class MainActivity extends Activity {
         String title = "";
         final List<Menu.Node> items = new ArrayList<>();
         boolean open;
+        boolean anim;   // item baru muncul dengan animasi
     }
 
     private static final class VRow {
@@ -158,6 +171,11 @@ public class MainActivity extends Activity {
     private Menu.Node unzipNode;
     private final Map<String, Browse> browse = new HashMap<>();
     private volatile Runner.Started running;
+    private boolean busy, fg;
+    private View runBar, logsBtn;
+    private ListView homeList;
+    private String pendingOpen;
+    private boolean pendingUnpacked;
     private volatile List<Vol> sdCache = new ArrayList<>();
     private final BroadcastReceiver mediaRx = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
@@ -217,14 +235,28 @@ public class MainActivity extends Activity {
         row.addView(logoBox);
         row.addView(titleBox, new LinearLayout.LayoutParams(0, -2, 1f));
         row.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        TextView lg = text("Logs", 13, ACCENT, true);
+        lg.setGravity(Gravity.CENTER);
+        lg.setPadding(dp(12), 0, dp(12), 0);
+        lg.setBackground(ripple(0x00000000, 20));
+        lg.setOnClickListener(v -> openLogs());
+        logsBtn = lg;
+        row.addView(logsBtn, new LinearLayout.LayoutParams(-2, dp(40)));
         row.addView(plus, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         View divider = new View(this);
         divider.setBackgroundColor(0x24FFFFFF);
 
+        ProgressBar pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pb.setIndeterminate(true);
+        pb.getIndeterminateDrawable().setColorFilter(ACCENT, android.graphics.PorterDuff.Mode.SRC_IN);
+        pb.setVisibility(View.GONE);
+        runBar = pb;
+
         content = new FrameLayout(this);
         root.addView(row, new LinearLayout.LayoutParams(-1, -2));
         root.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+        root.addView(runBar, new LinearLayout.LayoutParams(-1, dp(3)));
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(root);
         updateHeader();
@@ -276,8 +308,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        fg = false;
+        super.onPause();
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        fg = true;
         if (runner != null && stack.size() == 1 && stack.get(0).home) reloadHome();
     }
 
@@ -404,6 +443,8 @@ public class MainActivity extends Activity {
         spacer.setVisibility(home ? View.VISIBLE : View.GONE);
         titleBox.setVisibility(home ? View.GONE : View.VISIBLE);
         plus.setVisibility(home ? View.VISIBLE : View.GONE);
+        logsBtn.setVisibility(home ? View.VISIBLE : View.GONE);
+        runBar.setVisibility(busy ? View.VISIBLE : View.GONE);
         boolean showSub = !home && top != null && !top.plain;
         sub.setVisibility(showSub ? View.VISIBLE : View.GONE);
         if (showSub) {
@@ -540,6 +581,7 @@ public class MainActivity extends Activity {
             @Override public View getView(int i, View cv, ViewGroup parent) { return rowView(rows.get(i)); }
         };
         lv.setAdapter(homeAdapter);
+        homeList = lv;
         lv.setOnItemClickListener((a, v, pos, id) -> {
             Row r = rows.get(pos);
             if (r.kind == Row.PROJECT || r.kind == Row.PIN) toggleProject(r);
@@ -574,8 +616,19 @@ public class MainActivity extends Activity {
             case Row.EMPTY: {
                 TextView t = text(r.text, 14, SUB, false);
                 t.setGravity(Gravity.CENTER);
-                t.setPadding(dp(24), dp(28), dp(24), dp(28));
-                return t;
+                t.setPadding(dp(24), dp(28), dp(24), dp(r.act != null ? 12 : 28));
+                if (r.act == null) return t;
+                LinearLayout ec = new LinearLayout(this);
+                ec.setOrientation(LinearLayout.VERTICAL);
+                ec.setGravity(Gravity.CENTER_HORIZONTAL);
+                ec.addView(t, new LinearLayout.LayoutParams(-1, -2));
+                Button eb = button(r.actLabel, ACCENT);
+                eb.setFocusable(false);
+                eb.setOnClickListener(v -> r.act.run());
+                LinearLayout.LayoutParams ebl = new LinearLayout.LayoutParams(dp(200), dp(46));
+                ebl.bottomMargin = dp(20);
+                ec.addView(eb, ebl);
+                return ec;
             }
             case Row.DISKS:
                 return disksView(r);
@@ -829,6 +882,8 @@ public class MainActivity extends Activity {
 
     private void reloadDir(Row r) {
         final Browse b = r.b;
+        b.sel.clear();
+        b.selMode = false;
         b.loading = true;
         homeAdapter.notifyDataSetChanged();
         new Thread(() -> {
@@ -909,10 +964,43 @@ public class MainActivity extends Activity {
             box.addView(up);
         }
 
+        if (b.selMode) {
+            TextView cnt = text(b.sel.size() + " selected", 12, ACCENT, true);
+            cnt.setPadding(0, dp(8), 0, dp(6));
+            box.addView(cnt);
+            HorizontalScrollView hs = new HorizontalScrollView(this);
+            hs.setHorizontalScrollBarEnabled(false);
+            LinearLayout acts = new LinearLayout(this);
+            String[] labels = {"All", "Copy", "Move", "Delete", "✕"};
+            Runnable[] clicks = {
+                    () -> {
+                        for (String[] f : b.files) if (!f[0].equals("M")) b.sel.add(f[1]);
+                        homeAdapter.notifyDataSetChanged();
+                    },
+                    () -> openExplorerMulti(selectedPaths(r), false),
+                    () -> openExplorerMulti(selectedPaths(r), true),
+                    () -> confirmDeleteSel(r),
+                    () -> {
+                        b.sel.clear();
+                        b.selMode = false;
+                        homeAdapter.notifyDataSetChanged();
+                    }};
+            for (int i = 0; i < labels.length; i++) {
+                LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-2, -2);
+                al.rightMargin = dp(8);
+                acts.addView(tab(labels[i], i == 3, clicks[i]), al);
+            }
+            hs.addView(acts);
+            LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-1, -2);
+            hl.bottomMargin = dp(6);
+            box.addView(hs, hl);
+        }
+
         if (b.loading) {
             box.addView(text("Loading…", 12, SUB, false));
         } else if (b.files.isEmpty()) {
-            TextView e = text("Folder is empty", 12, SUB, false);
+            boolean root0 = b.abs == null && b.base == 0 && b.sub.isEmpty();
+            TextView e = text(root0 ? "Folder is empty.\nPut ROM files (zip, img, bin, br, dat) in this folder, then use Unzip ROM / Unpack in the project menu." : "Folder is empty", 12, SUB, false);
             e.setPadding(0, dp(8), 0, 0);
             box.addView(e);
         } else {
@@ -927,6 +1015,63 @@ public class MainActivity extends Activity {
         reloadDir(r);
     }
 
+    private TextView fileBadge(String name) {
+        String ext = name.contains(".") ? name.substring(name.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT) : "";
+        String lb = ext.isEmpty() ? "FILE" : ext.toUpperCase(Locale.ROOT);
+        int c = 0xFF90A4AE;
+        switch (ext) {
+            case "img": c = 0xFF42A5F5; break;
+            case "zip": case "7z": case "tar": case "gz": case "zst": case "zstd": c = 0xFFFFA726; break;
+            case "br": case "dat": case "bin": c = 0xFFAB47BC; break;
+            case "apk": c = 0xFF66BB6A; break;
+            case "sh": c = 0xFF26A69A; break;
+            case "patch": case "diff": c = 0xFFFF8282; break;
+            default: break;
+        }
+        if (lb.length() > 4) lb = lb.substring(0, 4);
+        TextView t = text(lb, 9, c, true);
+        t.setGravity(Gravity.CENTER);
+        t.setBackground(rect((c & 0x00FFFFFF) | 0x33000000, 8));
+        return t;
+    }
+
+    private void toggleSel(Row r, String name) {
+        Browse b = r.b;
+        if (!b.sel.remove(name)) b.sel.add(name);
+        b.selMode = !b.sel.isEmpty();
+        homeAdapter.notifyDataSetChanged();
+    }
+
+    private List<String> selectedPaths(Row r) {
+        List<String> out = new ArrayList<>();
+        for (String[] f : r.b.files) if (!f[0].equals("M") && r.b.sel.contains(f[1])) out.add(pathOf(r) + "/" + f[1]);
+        return out;
+    }
+
+    private void confirmDeleteSel(Row r) {
+        final Browse b = r.b;
+        final List<String> names = new ArrayList<>();
+        for (String[] f : b.files) if (!f[0].equals("M") && b.sel.contains(f[1])) names.add(f[1]);
+        if (names.isEmpty()) return;
+        confirmDialog("Delete " + names.size() + " items?", pathOf(r) + "\n\nThis cannot be undone.", "Delete", ERR, () -> {
+            b.sel.clear();
+            b.selMode = false;
+            new Thread(() -> {
+                StringBuilder sh = new StringBuilder("d=" + Runner.q(r.name) + "\n");
+                for (String nm : names) {
+                    if (nm.isEmpty() || nm.equals(".") || nm.equals("..") || nm.contains("/")) continue;
+                    sh.append("rm -rf ").append(dirExpr(b)).append('/').append(Runner.q(nm)).append('\n');
+                }
+                runner.capture(sh.toString());
+                loadDir(r.name, b);
+                ui.post(() -> {
+                    homeAdapter.notifyDataSetChanged();
+                    reloadHome();
+                });
+            }).start();
+        });
+    }
+
     private View entryRow(Row r, String[] f) {
         final Browse b = r.b;
         LinearLayout row = new LinearLayout(this);
@@ -938,50 +1083,67 @@ public class MainActivity extends Activity {
             return row;
         }
         final boolean dir = f[0].equals("D");
-        row.setPadding(0, dp(2), 0, dp(2));
-        row.setBackground(ripple(0x00000000, 10));
-        TextView mark = text(dir ? "▸" : "•", 14, dir ? ACCENT : SUB, false);
-        mark.setWidth(dp(20));
-        row.addView(mark);
+        final boolean selected = b.sel.contains(f[1]);
+        row.setPadding(dp(2), dp(3), 0, dp(3));
+        row.setBackground(ripple(selected ? 0x22FF8282 : 0x00000000, 10));
+        if (b.selMode) {
+            TextView ck = text(selected ? "☑" : "☐", 18, selected ? ACCENT : SUB, false);
+            ck.setGravity(Gravity.CENTER);
+            row.addView(ck, new LinearLayout.LayoutParams(dp(28), -2));
+        }
+        LinearLayout.LayoutParams mlp;
+        if (dir) {
+            ImageView ic = new ImageView(this);
+            ic.setImageResource(R.drawable.ic_folder);
+            mlp = new LinearLayout.LayoutParams(dp(24), dp(24));
+            mlp.rightMargin = dp(8);
+            row.addView(ic, mlp);
+        } else {
+            mlp = new LinearLayout.LayoutParams(dp(34), dp(22));
+            mlp.rightMargin = dp(8);
+            row.addView(fileBadge(f[1]), mlp);
+        }
         TextView nm = text(f[1], 13, TXT, false);
         nm.setSingleLine(true);
         nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
         row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
         String meta;
+        long sz = 0;
         if (dir) {
             meta = f[2].trim() + " items";
         } else {
-            long sz = 0;
             try { sz = Long.parseLong(f[2].trim()); } catch (Exception ignored) { }
             meta = humanSize(sz);
         }
+        final long fsz = sz;
         TextView mt = text(meta, 12, SUB, false);
-        mt.setPadding(dp(8), 0, 0, 0);
+        mt.setPadding(dp(8), 0, dp(b.selMode ? 8 : 0), 0);
         row.addView(mt);
-        TextView more = text("⋮", 18, SUB, true);
-        more.setGravity(Gravity.CENTER);
-        more.setOnClickListener(v -> entryMenu(r, f[1], dir, meta));
-        row.addView(more, new LinearLayout.LayoutParams(dp(30), dp(40)));
+        if (!b.selMode) {
+            TextView more = text("⋮", 18, SUB, true);
+            more.setGravity(Gravity.CENTER);
+            more.setOnClickListener(v -> entryMenu(r, f[1], dir, meta));
+            row.addView(more, new LinearLayout.LayoutParams(dp(30), dp(40)));
+            ImageView del = new ImageView(this);
+            del.setImageResource(R.drawable.ic_delete);
+            del.setPadding(dp(10), dp(10), dp(10), dp(10));
+            del.setOnClickListener(v -> confirmDelete(r, f[1], dir));
+            row.addView(del, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        }
         row.setOnLongClickListener(v -> {
-            entryMenu(r, f[1], dir, meta);
+            toggleSel(r, f[1]);
             return true;
         });
-        ImageView del = new ImageView(this);
-        del.setImageResource(R.drawable.ic_delete);
-        del.setPadding(dp(10), dp(10), dp(10), dp(10));
-        del.setOnClickListener(v -> confirmDelete(r, f[1], dir));
-        row.addView(del, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        if (dir) {
-            row.setOnClickListener(v -> {
+        row.setOnClickListener(v -> {
+            if (b.selMode) {
+                toggleSel(r, f[1]);
+            } else if (dir) {
                 b.sub.add(f[1]);
                 reloadDir(r);
-            });
-        } else {
-            long sz = 0;
-            try { sz = Long.parseLong(f[2].trim()); } catch (Exception ignored) { }
-            final long fsz = sz;
-            row.setOnClickListener(v -> openEditor(r, f[1], fsz));
-        }
+            } else {
+                openEditor(r, f[1], fsz);
+            }
+        });
         return row;
     }
 
@@ -1138,7 +1300,9 @@ public class MainActivity extends Activity {
             if (projects.isEmpty()) {
                 Row e = new Row();
                 e.kind = Row.EMPTY;
-                e.text = "No projects yet.\nTap + to create your first one.";
+                e.text = "No projects yet.\nCreate one to start unpacking ROM files.";
+                e.act = () -> newProjectDialog();
+                e.actLabel = "Create project";
                 res.add(e);
             }
             res.addAll(projects);
@@ -1194,6 +1358,24 @@ public class MainActivity extends Activity {
                 rows.clear();
                 rows.addAll(res);
                 if (homeAdapter != null) homeAdapter.notifyDataSetChanged();
+                if (pendingOpen != null) {
+                    String nm = pendingOpen;
+                    pendingOpen = null;
+                    for (int i = 0; i < rows.size(); i++) {
+                        Row pr = rows.get(i);
+                        if (pr.kind == Row.PROJECT && pr.name.equals(nm) && pr.b != null) {
+                            pr.b.base = pendingUnpacked && pr.hasUnpacked ? 1 : 0;
+                            pr.b.sub.clear();
+                            pr.b.open = true;
+                            reloadDir(pr);
+                            if (homeList != null) {
+                                final int pos = i;
+                                homeList.post(() -> homeList.setSelection(pos));
+                            }
+                            break;
+                        }
+                    }
+                }
             });
         }).start();
     }
@@ -1377,6 +1559,13 @@ public class MainActivity extends Activity {
         final AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setView(box).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        final String uk = (!dir && r.b != null && r.b.abs == null && r.b.base == 0 && r.b.sub.isEmpty()) ? unpackKind(name) : null;
+        if (uk != null) {
+            addAction(box, R.drawable.ic_folder, "Unpack", "Extract this " + uk.toUpperCase(Locale.ROOT) + " into the project", () -> {
+                d.dismiss();
+                quickUnpack(r.name, name, uk);
+            });
+        }
         addAction(box, R.drawable.ic_edit, "Rename", "Change the " + (dir ? "folder" : "file") + " name", () -> {
             d.dismiss();
             renameDialog(path, name, dir);
@@ -1442,6 +1631,7 @@ public class MainActivity extends Activity {
         boolean loading, failed;
         List<String> dirs = new ArrayList<>();
         List<String[]> files = new ArrayList<>();
+        List<String> multi;   // beberapa sumber sekaligus (multi-select)
         int gen;   // hasil load yang sudah basi diabaikan
 
         Explorer(int mode, String src, boolean move, String startRoot) {
@@ -1545,9 +1735,9 @@ public class MainActivity extends Activity {
             LinearLayout row = new LinearLayout(MainActivity.this);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(dp(6), dp(9), dp(6), dp(9));
-            TextView m = text("•", 14, SUB, false);
-            m.setWidth(dp(22));
-            row.addView(m);
+            LinearLayout.LayoutParams bl2 = new LinearLayout.LayoutParams(dp(34), dp(22));
+            bl2.rightMargin = dp(8);
+            row.addView(fileBadge(name), bl2);
             TextView nm = text(name, 13, SUB, false);
             nm.setSingleLine(true);
             nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
@@ -1583,7 +1773,7 @@ public class MainActivity extends Activity {
                 hcol.setOrientation(LinearLayout.VERTICAL);
                 hcol.setPadding(dp(14), 0, 0, 0);
                 hcol.addView(text(move ? "MOVING" : "COPYING", 10, ACCENT, true));
-                TextView hn = text(baseName(src), 15, TXT, true);
+                TextView hn = text(multi != null ? multi.size() + " items" : baseName(src), 15, TXT, true);
                 hn.setSingleLine(true);
                 hn.setEllipsize(TextUtils.TruncateAt.MIDDLE);
                 hcol.addView(hn);
@@ -1666,6 +1856,25 @@ public class MainActivity extends Activity {
                 b.setEnabled(!loading && !failed);
                 b.setOnClickListener(x -> {
                     final String dest = cur;
+                    if (multi != null) {
+                        for (String sp : multi) {
+                            if ((dest + "/").startsWith(sp + "/")) {
+                                toast("Can't put a folder inside itself");
+                                return;
+                            }
+                        }
+                        if (move && dest.equals(parentOf(src))) {
+                            toast("Already in this folder");
+                            return;
+                        }
+                        if (running != null) {
+                            toast("Another task is running");
+                            return;
+                        }
+                        if (!stack.isEmpty() && stack.get(stack.size() - 1).explorer == this) stack.remove(stack.size() - 1);
+                        transferMulti(multi, dest, move);
+                        return;
+                    }
                     if ((dest + "/").startsWith(src + "/")) {
                         toast("Can't put a folder inside itself");
                         return;
@@ -1687,6 +1896,71 @@ public class MainActivity extends Activity {
             bl.topMargin = dp(12);
             box.addView(b, bl);
         }
+    }
+
+    private void openExplorerMulti(List<String> srcs, boolean move) {
+        if (runner == null || srcs.isEmpty()) return;
+        List<String> real = new ArrayList<>();
+        for (String x : srcs) real.add(x.startsWith("/sdcard/") ? internalRoot() + x.substring(7) : x);
+        Explorer ex = new Explorer(EX_DEST, real.get(0), move, null);
+        ex.multi = real.size() > 1 ? real : null;
+        push(move ? "Move to…" : "Copy to…", ex.box);
+        stack.get(stack.size() - 1).explorer = ex;
+        stack.get(stack.size() - 1).plain = true;
+        ex.render();
+        updateHeader();
+    }
+
+    private void transferMulti(List<String> srcs, String destDir, boolean move) {
+        StringBuilder sb = new StringBuilder();
+        for (String x : srcs) sb.append(x).append('\n');
+        Map<String, String> env = new LinkedHashMap<>();
+        env.put("SRCS", sb.toString());
+        env.put("DST_DIR", destDir);
+        run((move ? "Move " : "Copy ") + srcs.size() + " items", "samples/batch.sh " + (move ? "move" : "copy"), env, null, true);
+    }
+
+    // ---------- unpack cepat dari menu file ----------
+    private static String unpackKind(String name) {
+        String n = name.toLowerCase(Locale.ROOT);
+        if (n.equals("payload.bin")) return "bin";
+        if (n.endsWith(".new.dat")) return "dat";
+        if (n.endsWith(".img")) return "img";
+        if (n.endsWith(".br")) return "br";
+        if (n.endsWith(".zst") || n.endsWith(".zstd")) return "zst";
+        return null;
+    }
+
+    private Menu.Param checkParam(String name, String label) {
+        Menu.Param p = new Menu.Param();
+        p.name = name;
+        p.type = "checkbox";
+        p.label = label;
+        return p;
+    }
+
+    private void quickUnpack(String project, String name, String kind) {
+        Menu.Node n = new Menu.Node(Menu.ACTION);
+        Map<String, String> fixed = new LinkedHashMap<>();
+        switch (kind) {
+            case "br": n.title = "Unpack br"; n.set = "dna extract $BR --delete $silence"; fixed.put("BR", name); break;
+            case "dat": n.title = "Unpack dat"; n.set = "dna extract $DAT --delete $silence"; fixed.put("DAT", name); break;
+            case "zst": n.title = "Unpack zstd"; n.set = "$START_DIR/samples/u_zstd_img.sh"; fixed.put("ZST", name); break;
+            case "bin":
+                n.title = "Unpack bin";
+                n.set = "dna dumper --partition \"$img\" --delete $silence --auto $auto $DNA_PRO/payload.bin";
+                break;
+            default: n.title = "Unpack img"; n.set = "dna extract $IMG --delete $silence"; fixed.put("IMG", name); break;
+        }
+        n.params.add(checkParam("silence", "Delete source file"));
+        if (kind.equals("bin")) n.params.add(checkParam("auto", "Automatically unpack extracted IMG"));
+        new Thread(() -> {
+            runner.capture("echo " + Runner.q(project) + " > \"$TMPDIR/DNA.ini\"");
+            ui.post(() -> {
+                updateHeader();
+                paramDialog(n, fixed);
+            });
+        }).start();
     }
 
     private void openProject(String name) {
@@ -1739,8 +2013,10 @@ public class MainActivity extends Activity {
             VRow r = ad.vis.get(pos);
             if (r.kind == VRow.HEADER) {
                 r.sec.open = !r.sec.open;
+                r.sec.anim = r.sec.open;
                 ad.rebuild();
                 ad.notifyDataSetChanged();
+                if (r.sec.anim) ui.postDelayed(() -> r.sec.anim = false, 450);
             } else {
                 onNode(r.node);
             }
@@ -1796,7 +2072,14 @@ public class MainActivity extends Activity {
             VRow r = vis.get(i);
             if (r.kind == VRow.TOP) return nodeView(r.node);
             if (r.kind == VRow.HEADER) return headerView(r.sec);
-            return itemView(r.node);
+            View iv = itemView(r.node);
+            if (r.sec != null && r.sec.anim) {
+                int k = Math.min(Math.max(0, r.sec.items.indexOf(r.node)), 8);
+                iv.setAlpha(0f);
+                iv.setTranslationY(-dp(8));
+                iv.animate().alpha(1f).translationY(0f).setDuration(200).setStartDelay(k * 20L).start();
+            }
+            return iv;
         }
     }
 
@@ -2058,7 +2341,7 @@ public class MainActivity extends Activity {
     // ---------- action + parameter ----------
     private void openAction(Menu.Node n) {
         if (n.params.isEmpty()) {
-            run(n.title, n.set, new LinkedHashMap<String, String>(), n, false);
+            launch(n, new LinkedHashMap<String, String>());
             return;
         }
         new Thread(() -> {
@@ -2084,23 +2367,65 @@ public class MainActivity extends Activity {
     }
 
     private void paramDialog(Menu.Node n) {
-        ScrollView sv = new ScrollView(this);
+        paramDialog(n, null);
+    }
+
+    /** Bottom sheet berisi parameter; opsi tetap (fixed) ikut dikirim sebagai environment. */
+    private void paramDialog(Menu.Node n, Map<String, String> fixed) {
+        final int maxH = getResources().getDisplayMetrics().heightPixels * 6 / 10;
+        ScrollView sv = new ScrollView(this) {
+            @Override protected void onMeasure(int w, int h) {
+                super.onMeasure(w, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST));
+            }
+        };
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(22), dp(8), dp(22), dp(8));
         sv.addView(box);
         final List<Getter> getters = new ArrayList<>();
         for (Menu.Param p : n.params) getters.add(addParam(box, p));
 
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle(n.title).setView(sv)
-                .setPositiveButton("Run", null).setNegativeButton("Cancel", null).create();
-        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
-        d.show();
-        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(ACCENT);
-        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
-        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(dp(20), dp(10), dp(20), dp(16));
+        float rd = dp(24);
+        GradientDrawable sbg = new GradientDrawable();
+        sbg.setColor(SURFACE);
+        sbg.setCornerRadii(new float[]{rd, rd, rd, rd, 0, 0, 0, 0});
+        sheet.setBackground(sbg);
+        View handle = new View(this);
+        handle.setBackground(rect(0x33FFFFFF, 2));
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(dp(36), dp(4));
+        hp.gravity = Gravity.CENTER_HORIZONTAL;
+        hp.bottomMargin = dp(14);
+        sheet.addView(handle, hp);
+        sheet.addView(text(n.title, 19, TXT, true));
+        if (!n.desc.isEmpty()) sheet.addView(text(n.desc, 12, SUB, false));
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(-1, -2);
+        sl.topMargin = dp(4);
+        sheet.addView(sv, sl);
+        LinearLayout btns = new LinearLayout(this);
+        Button cancel = button("Cancel", SURFACE2);
+        Button go = button("Run", ACCENT);
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        cl.rightMargin = dp(8);
+        btns.addView(cancel, cl);
+        btns.addView(go, new LinearLayout.LayoutParams(0, dp(48), 1.4f));
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, -2);
+        bl.topMargin = dp(16);
+        sheet.addView(btns, bl);
+
+        final Dialog d = new Dialog(this, android.R.style.Theme_Material_Dialog_NoActionBar);
+        d.setContentView(sheet);
+        Window w = d.getWindow();
+        w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        w.setGravity(Gravity.BOTTOM);
+        w.setLayout(-1, -2);
+        w.setWindowAnimations(android.R.style.Animation_InputMethod);
+        w.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        cancel.setOnClickListener(v -> d.dismiss());
+        go.setOnClickListener(v -> {
             Map<String, String> env = new LinkedHashMap<>();
+            if (fixed != null) env.putAll(fixed);
             for (int i = 0; i < n.params.size(); i++) {
                 Menu.Param p = n.params.get(i);
                 String val = getters.get(i).get();
@@ -2111,8 +2436,114 @@ public class MainActivity extends Activity {
                 if (!p.name.isEmpty()) env.put(p.name, val);
             }
             d.dismiss();
-            run(n.title, n.set, env, n, false);
+            launch(n, env);
         });
+        d.show();
+    }
+
+    // ---------- dialog helper ----------
+    private void confirmDialog(String title, CharSequence msg, String ok, int okColor, Runnable onOk) {
+        AlertDialog.Builder bd = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(title).setMessage(msg);
+        if (onOk != null) bd.setPositiveButton(ok, (x, w) -> onOk.run()).setNegativeButton("Cancel", null);
+        else bd.setPositiveButton(ok, null);
+        AlertDialog d = bd.create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(okColor);
+        if (onOk != null) d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+    }
+
+    private void dangerConfirm(String title, List<String[]> info, Runnable go) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), dp(4));
+        TextView warn = text("This writes directly to the device and cannot be undone. A wrong file can leave the phone unable to boot.", 13, TXT, false);
+        warn.setBackground(rect(0x33EF5350, 12));
+        warn.setPadding(dp(12), dp(10), dp(12), dp(10));
+        box.addView(warn);
+        for (String[] i : info) {
+            TextView t = text(i[0] + ": " + i[1], 12, SUB, false);
+            t.setTypeface(Typeface.MONOSPACE);
+            t.setPadding(0, dp(6), 0, 0);
+            box.addView(t);
+        }
+        CheckBox cb = new CheckBox(this);
+        cb.setText("I understand, continue");
+        cb.setTextColor(TXT);
+        cb.setPadding(dp(6), dp(10), 0, dp(6));
+        box.addView(cb);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(box);
+        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(title).setView(sv)
+                .setPositiveButton("Continue", (x, w) -> go.run()).setNegativeButton("Cancel", null).create();
+        d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+        d.show();
+        Button pos = d.getButton(AlertDialog.BUTTON_POSITIVE);
+        pos.setTextColor(ERR);
+        pos.setEnabled(false);
+        d.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(SUB);
+        cb.setOnCheckedChangeListener((c, on) -> pos.setEnabled(on));
+    }
+
+    /** {basis folder, daftar nama, pemisah} untuk parameter file project, atau null. */
+    private String[] fileSpec(Menu.Node job, Map<String, String> env) {
+        for (String name : new String[]{"ZIP", "BR", "DAT", "ZST", "IMG"}) {
+            String val = env.get(name);
+            if (val == null || val.trim().isEmpty()) continue;
+            if (name.equals("IMG") && val.startsWith("/")) continue;
+            String sep = ",";
+            if (job != null) for (Menu.Param q : job.params)
+                if (q.name.equals(name) && q.multiple && !q.separator.isEmpty()) sep = q.separator;
+            return new String[]{name.equals("ZIP") ? "$DNA_DIR" : "$DNA_PRO", val, sep};
+        }
+        return null;
+    }
+
+    /** Cek sebelum jalan: root untuk flash, konfirmasi bahaya, dan sisa storage untuk unpack. */
+    private void launch(Menu.Node n, Map<String, String> env) {
+        final String tl = n.title.toLowerCase(Locale.ROOT);
+        final boolean flash = tl.contains("flash");
+        final boolean unpack = tl.startsWith("unpack") || tl.equals("unzip rom");
+        new Thread(() -> {
+            if (flash && !runner.isRoot()) {
+                ui.post(() -> confirmDialog("Root required", "Flashing a partition needs root access. Grant root to this app first.", "OK", ACCENT, null));
+                return;
+            }
+            String warn = null;
+            List<String[]> info = flash ? jobInfo(n, env) : null;
+            String[] fs = unpack ? fileSpec(n, env) : null;
+            if (fs != null) {
+                StringBuilder sh = new StringBuilder("cd \"" + fs[0] + "\" 2>/dev/null || exit 0\nt=0\n");
+                for (String f : fs[1].split(Pattern.quote(fs[2]) + "|\n")) {
+                    f = f.trim();
+                    if (f.isEmpty()) continue;
+                    sh.append("s=$(stat -c %s ").append(Runner.q(f)).append(" 2>/dev/null); [ -n \"$s\" ] && t=$((t+s))\n");
+                }
+                String tgt = fs[0].equals("$DNA_DIR") ? "$DNA_DIR" : "$DNA_TMP";
+                sh.append("mkdir -p \"").append(tgt).append("\" 2>/dev/null\n")
+                  .append("set -- $(df -k \"").append(tgt).append("\" 2>/dev/null | tail -1)\necho \"$t $4\"\n");
+                try {
+                    String[] o = runner.capture(sh.toString()).trim().split("\\s+");
+                    long total = Long.parseLong(o[0]);
+                    long freeKb = Long.parseLong(o[1]);
+                    long need = (long) (total * (env.containsKey("IMG") ? 1.2 : 3.0));
+                    if (total > 0 && freeKb * 1024L < need) {
+                        warn = "Free space: " + humanSize(freeKb * 1024L) + "\nNeeded (estimated): " + humanSize(need)
+                                + "\n\nThe task may fail halfway. Continue anyway?";
+                    }
+                } catch (Exception ignored) { }
+            }
+            final String w = warn;
+            final List<String[]> fi = info;
+            ui.post(() -> {
+                Runnable go = () -> run(n.title, n.set, env, n, false);
+                if (flash) dangerConfirm("Confirm " + n.title, fi, go);
+                else if (w != null) confirmDialog("Low storage", w, "Continue", ACCENT, go);
+                else go.run();
+            });
+        }).start();
     }
 
     private Getter addParam(LinearLayout box, Menu.Param p) {
@@ -2151,6 +2582,18 @@ public class MainActivity extends Activity {
             g = () -> String.valueOf(min + sb.getProgress());
         } else if (!p.options.isEmpty() && p.multiple) {
             List<CheckBox> cbs = new ArrayList<>();
+            if (p.options.size() > 3) {
+                LinearLayout selRow = new LinearLayout(this);
+                TextView all = text("Select all", 12, ACCENT, true);
+                TextView none = text("Clear", 12, SUB, true);
+                all.setPadding(0, dp(8), dp(16), dp(4));
+                none.setPadding(0, dp(8), 0, dp(4));
+                selRow.addView(all);
+                selRow.addView(none);
+                box.addView(selRow);
+                all.setOnClickListener(v -> { for (CheckBox c : cbs) c.setChecked(true); });
+                none.setOnClickListener(v -> { for (CheckBox c : cbs) c.setChecked(false); });
+            }
             for (Menu.Opt o : p.options) {
                 CheckBox cb = new CheckBox(this);
                 cb.setText(o.label);
@@ -2176,11 +2619,34 @@ public class MainActivity extends Activity {
                 labels.add(o.label);
                 if (o.selected || (!p.value.isEmpty() && o.value.equals(p.value))) sel = i;
             }
-            Spinner sp = new Spinner(this);
-            sp.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
-            sp.setSelection(sel);
-            box.addView(sp);
-            g = () -> p.options.get(sp.getSelectedItemPosition()).value;
+            final int[] idx = {sel};
+            final String[] arr = labels.toArray(new String[0]);
+            TextView field = text(arr[sel] + "   ▾", 14, TXT, false);
+            field.setBackground(ripple(SURFACE2, 12));
+            field.setPadding(dp(14), dp(13), dp(14), dp(13));
+            field.setSingleLine(true);
+            field.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            field.setOnClickListener(v -> {
+                AlertDialog dd = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                        .setItems(arr, (x, w) -> {
+                            idx[0] = w;
+                            field.setText(arr[w] + "   ▾");
+                        }).create();
+                dd.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
+                dd.show();
+            });
+            LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(-1, -2);
+            flp.topMargin = dp(6);
+            box.addView(field, flp);
+            g = () -> p.options.get(idx[0]).value;
+        } else if (!p.optionsSh.isEmpty()) {
+            TextView none = text("No matching files found in this project.", 13, ERR, false);
+            none.setBackground(rect(0x22EF5350, 12));
+            none.setPadding(dp(14), dp(12), dp(14), dp(12));
+            LinearLayout.LayoutParams nlp2 = new LinearLayout.LayoutParams(-1, -2);
+            nlp2.topMargin = dp(6);
+            box.addView(none, nlp2);
+            g = () -> "";
         } else {
             EditText et = input();
             et.setText(p.value);
@@ -2248,9 +2714,12 @@ public class MainActivity extends Activity {
         final TextView tv = new TextView(MainActivity.this);
         final TextView status = chip();
         final TextView timer = text("00:00", 12, SUB, false);
-        final TextView copy = text("Copy log", 12, ACCENT, true);
+        final TextView copy = text("Copy", 12, ACCENT, true);
+        final TextView share = text("Share", 12, ACCENT, true);
         final ScrollView sc = new ScrollView(MainActivity.this);
         final Button btn = button("Stop", ERR);
+        final Button openBtn = button("Open files", SURFACE2);
+        final String jobTitle;
         final long t0 = System.currentTimeMillis();
         private final StringBuilder pending = new StringBuilder();
         private boolean scheduled;
@@ -2264,15 +2733,18 @@ public class MainActivity extends Activity {
             }
         };
 
-        Console() {
+        Console(String jobTitle) {
+            this.jobTitle = jobTitle;
             root.setOrientation(LinearLayout.VERTICAL);
             root.setPadding(dp(14), dp(12), dp(14), dp(14));
             status.setText("● Running…");
             status.setTextColor(ACCENT);
             timer.setTypeface(Typeface.MONOSPACE);
-            timer.setPadding(0, 0, dp(12), 0);
-            copy.setPadding(dp(10), dp(6), dp(10), dp(6));
-            copy.setBackground(ripple(0x00000000, 14));
+            timer.setPadding(0, 0, dp(8), 0);
+            for (TextView a : new TextView[]{copy, share}) {
+                a.setPadding(dp(10), dp(6), dp(10), dp(6));
+                a.setBackground(ripple(0x00000000, 14));
+            }
             copy.setOnClickListener(v -> {
                 ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
                 if (cm != null) {
@@ -2280,6 +2752,7 @@ public class MainActivity extends Activity {
                     Toast.makeText(MainActivity.this, "Log copied", Toast.LENGTH_SHORT).show();
                 }
             });
+            share.setOnClickListener(v -> shareText(jobTitle, tv.getText().toString()));
             tv.setTypeface(Typeface.MONOSPACE);
             tv.setTextSize(12);
             tv.setLineSpacing(0, 1.12f);
@@ -2294,13 +2767,20 @@ public class MainActivity extends Activity {
             bar.addView(new View(MainActivity.this), new LinearLayout.LayoutParams(0, 1, 1f));
             bar.addView(timer);
             bar.addView(copy);
+            bar.addView(share);
             LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(-1, -2);
             sl.bottomMargin = dp(10);
             root.addView(bar, sl);
             root.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1f));
-            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, dp(52));
+            LinearLayout bottom = new LinearLayout(MainActivity.this);
+            openBtn.setVisibility(View.GONE);
+            LinearLayout.LayoutParams ol = new LinearLayout.LayoutParams(0, dp(52), 1f);
+            ol.rightMargin = dp(8);
+            bottom.addView(openBtn, ol);
+            bottom.addView(btn, new LinearLayout.LayoutParams(0, dp(52), 1f));
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, -2);
             bl.topMargin = dp(12);
-            root.addView(btn, bl);
+            root.addView(bottom, bl);
             ui.postDelayed(tick, 1000);
         }
 
@@ -2344,7 +2824,7 @@ public class MainActivity extends Activity {
                 sb.setSpan(new ForegroundColorSpan(OK), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             } else if (line.startsWith("✕") || line.startsWith("!") || line.startsWith("！")) {
                 sb.setSpan(new ForegroundColorSpan(ERR), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            } else if (line.matches("^[A-Z][A-Z0-9 ._\\-]{1,40}$") || line.startsWith("Running…") || line.endsWith("…") && !line.startsWith(" ")) {
+            } else if (line.matches("^[A-Z][A-Z0-9 ._\\-]{1,40}$") || line.matches("^\\[[0-9]+/[0-9]+\\]$") || line.startsWith("Running…") || (line.endsWith("…") && !line.startsWith(" "))) {
                 sb.setSpan(new ForegroundColorSpan(ACCENT), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 sb.setSpan(new StyleSpan(Typeface.BOLD), 0, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             } else {
@@ -2378,7 +2858,7 @@ public class MainActivity extends Activity {
             sc.post(() -> sc.fullScroll(View.FOCUS_DOWN));
         }
 
-        void finish(int exit, boolean selfFooter) {
+        void finish(int exit, boolean selfFooter, String openProject, boolean unpacked) {
             done = true;
             long took = System.currentTimeMillis() - t0;
             boolean ok = exit == 0;
@@ -2392,10 +2872,205 @@ public class MainActivity extends Activity {
             timer.setText(fmtClock(took));
             status.setText(ok ? "✓ Done" : stopped ? "✕ Stopped" : "✕ Failed");
             status.setTextColor(ok ? OK : ERR);
+            status.setScaleX(0.85f);
+            status.setScaleY(0.85f);
+            status.animate().scaleX(1f).scaleY(1f).setDuration(220).start();
             btn.setText("Close");
             btn.setTextColor(0xFF2B0A0A);
             btn.setBackground(ripple(ACCENT, 16));
+            if (openProject != null) {
+                openBtn.setVisibility(View.VISIBLE);
+                openBtn.setOnClickListener(v -> openProjectFiles(openProject, unpacked));
+            }
+            haptic(ok);
+            saveLog(jobTitle, tv.getText().toString());
+            if (!fg) notifyDone(jobTitle, ok, took);
         }
+    }
+
+    private void haptic(boolean ok) {
+        try {
+            int c;
+            if (Build.VERSION.SDK_INT >= 30) c = ok ? HapticFeedbackConstants.CONFIRM : HapticFeedbackConstants.REJECT;
+            else c = ok ? HapticFeedbackConstants.KEYBOARD_TAP : HapticFeedbackConstants.LONG_PRESS;
+            content.performHapticFeedback(c);
+        } catch (Exception ignored) { }
+    }
+
+    private void notifyDone(String title, boolean ok, long ms) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            Notification.Builder nb;
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(new NotificationChannel("dna_tasks", "Tasks", NotificationManager.IMPORTANCE_DEFAULT));
+                nb = new Notification.Builder(this, "dna_tasks");
+            } else {
+                nb = new Notification.Builder(this);
+            }
+            Intent it = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            PendingIntent pi = PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_UPDATE_CURRENT);
+            nb.setSmallIcon(R.drawable.ic_logo)
+              .setContentTitle((ok ? "✓ " : "✕ ") + title)
+              .setContentText((ok ? "Done in " : "Failed after ") + fmtDur(ms))
+              .setContentIntent(pi).setAutoCancel(true);
+            nm.notify(1001, nb.build());
+        } catch (Exception ignored) { }
+    }
+
+    private void shareText(String title, String text) {
+        try {
+            String t = text.length() > 80000 ? text.substring(text.length() - 80000) : text;
+            Intent it = new Intent(Intent.ACTION_SEND);
+            it.setType("text/plain");
+            it.putExtra(Intent.EXTRA_SUBJECT, "DNA log: " + title);
+            it.putExtra(Intent.EXTRA_TEXT, t);
+            startActivity(Intent.createChooser(it, "Share log"));
+        } catch (Exception e) {
+            toast("Cannot share");
+        }
+    }
+
+    /** Balik ke home dan buka folder project (tab Unpacked kalau habis unpack). */
+    private void openProjectFiles(String name, boolean unpacked) {
+        if (running != null) return;
+        pendingOpen = name;
+        pendingUnpacked = unpacked;
+        while (stack.size() > 1) stack.remove(stack.size() - 1);
+        showTop();
+    }
+
+    // ---------- riwayat log (/sdcard/DNA/logs) ----------
+    private void saveLog(String title, String text) {
+        new Thread(() -> {
+            try {
+                File tmp = File.createTempFile("log_", ".txt", getCacheDir());
+                FileOutputStream o = new FileOutputStream(tmp);
+                o.write(text.getBytes("UTF-8"));
+                o.close();
+                tmp.setReadable(true, false);
+                String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+                String t = title.replaceAll("[^A-Za-z0-9.-]+", "_");
+                if (t.length() > 40) t = t.substring(0, 40);
+                String nm = stamp + "_" + t + ".log";
+                runner.capture("mkdir -p \"$DNA_DIR/logs\"\ncp " + Runner.q(tmp.getAbsolutePath()) + " \"$DNA_DIR/logs/" + nm + "\"\n"
+                        + "ls -t \"$DNA_DIR/logs\" | tail -n +41 | while read -r f; do rm -f \"$DNA_DIR/logs/$f\"; done\n");
+                tmp.delete();
+            } catch (Exception ignored) { }
+        }).start();
+    }
+
+    private void openLogs() {
+        if (runner == null) return;
+        new Thread(() -> {
+            String out = runner.capture("ls -t \"$DNA_DIR/logs\" 2>/dev/null");
+            List<String> names = new ArrayList<>();
+            for (String l : out.split("\n")) {
+                l = l.trim();
+                if (l.matches("[A-Za-z0-9._-]+\\.log")) names.add(l);
+            }
+            ui.post(() -> {
+                push("Logs", logsView(names));
+                stack.get(stack.size() - 1).plain = true;
+                updateHeader();
+            });
+        }).start();
+    }
+
+    private View logsView(List<String> names) {
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(14), dp(10), dp(14), dp(24));
+        sv.addView(col);
+        if (names.isEmpty()) {
+            TextView t = text("No logs yet.\nA log is saved to /sdcard/DNA/logs after every task.", 14, SUB, false);
+            t.setGravity(Gravity.CENTER);
+            t.setPadding(dp(24), dp(48), dp(24), dp(24));
+            col.addView(t);
+        }
+        for (String nm : names) col.addView(logRow(nm));
+        return sv;
+    }
+
+    private View logRow(String nm) {
+        String base = nm.substring(0, nm.length() - 4);
+        String when = "", what = base;
+        if (base.length() > 16 && base.charAt(8) == '_') {
+            try {
+                Date dt = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).parse(base.substring(0, 15));
+                when = new SimpleDateFormat("dd MMM yyyy, HH:mm:ss", Locale.getDefault()).format(dt);
+                what = base.substring(16).replace('_', ' ');
+            } catch (Exception ignored) { }
+        }
+        final String fw = what;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(13), dp(16), dp(13));
+        card.setBackground(ripple(SURFACE, 16));
+        card.addView(text(what, 15, TXT, true));
+        if (!when.isEmpty()) card.addView(text(when, 12, SUB, false));
+        card.setOnClickListener(v -> viewLog(nm, fw));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(8);
+        card.setLayoutParams(lp);
+        return card;
+    }
+
+    private void viewLog(String nm, String what) {
+        new Thread(() -> {
+            String raw = runner.capture("cat \"$DNA_DIR/logs/" + nm + "\" 2>/dev/null");
+            final String text = raw.length() > 200000 ? raw.substring(raw.length() - 200000) : raw;
+            ui.post(() -> {
+                LinearLayout root = new LinearLayout(this);
+                root.setOrientation(LinearLayout.VERTICAL);
+                root.setPadding(dp(14), dp(12), dp(14), dp(14));
+                TextView tv = new TextView(this);
+                tv.setTypeface(Typeface.MONOSPACE);
+                tv.setTextSize(12);
+                tv.setLineSpacing(0, 1.12f);
+                tv.setTextColor(0xFFD7DAE0);
+                tv.setTextIsSelectable(true);
+                tv.setPadding(dp(14), dp(14), dp(14), dp(14));
+                tv.setText(text);
+                ScrollView sc = new ScrollView(this);
+                sc.setBackground(rect(0xFF0A0C0F, 16));
+                sc.addView(tv);
+                root.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1f));
+                LinearLayout row = new LinearLayout(this);
+                Button bc = button("Copy", SURFACE2), bs = button("Share", SURFACE2), bd = button("Delete", ERR);
+                LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(0, dp(48), 1f);
+                l1.rightMargin = dp(8);
+                LinearLayout.LayoutParams l2 = new LinearLayout.LayoutParams(0, dp(48), 1f);
+                l2.rightMargin = dp(8);
+                row.addView(bc, l1);
+                row.addView(bs, l2);
+                row.addView(bd, new LinearLayout.LayoutParams(0, dp(48), 1f));
+                LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(-1, -2);
+                rl.topMargin = dp(12);
+                root.addView(row, rl);
+                bc.setOnClickListener(v -> {
+                    ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("DNA log", text));
+                        toast("Log copied");
+                    }
+                });
+                bs.setOnClickListener(v -> shareText(what, text));
+                bd.setOnClickListener(v -> confirmDialog("Delete log?", what, "Delete", ERR, () -> new Thread(() -> {
+                    runner.capture("rm -f \"$DNA_DIR/logs/" + nm + "\"");
+                    ui.post(() -> {
+                        if (stack.size() > 1) stack.remove(stack.size() - 1);
+                        if (stack.size() > 1) stack.remove(stack.size() - 1);
+                        showTop();
+                        openLogs();
+                    });
+                }).start()));
+                push(what, root);
+                stack.get(stack.size() - 1).plain = true;
+                updateHeader();
+            });
+        }).start();
     }
 
     private static String shortList(String v, String sep, boolean keepPath) {
@@ -2484,11 +3159,14 @@ public class MainActivity extends Activity {
      * @param selfHeader true kalau script sudah mencetak header + "Done in" sendiri (copy / move / rename)
      */
     private void run(String t, String body, Map<String, String> env, Menu.Node job, boolean selfHeader) {
-        if (running != null) {
+        if (running != null || busy) {
             toast("Another task is running");
             return;
         }
-        final Console c = new Console();
+        final String proj = project();
+        final boolean offerOpen = !selfHeader && !proj.equals("none") && !t.startsWith("Delete");
+        final boolean unpacked = t.startsWith("Unpack");
+        final Console c = new Console(t);
         c.btn.setOnClickListener(v -> {
             Runner.Started st = running;
             if (st != null) {
@@ -2498,6 +3176,7 @@ public class MainActivity extends Activity {
                 onBackPressed();
             }
         });
+        busy = true;
         push(t, c.root);
         stack.get(stack.size() - 1).plain = true;
         updateHeader();
@@ -2522,7 +3201,8 @@ public class MainActivity extends Activity {
             }
             final int exit = code;
             ui.post(() -> {
-                c.finish(exit, selfHeader && exit == 0);
+                busy = false;
+                c.finish(exit, selfHeader && exit == 0, offerOpen ? proj : null, unpacked);
                 updateHeader();
             });
         }).start();
