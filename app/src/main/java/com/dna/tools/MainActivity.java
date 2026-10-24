@@ -1,6 +1,9 @@
 package com.dna.tools;
 
 import android.Manifest;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -42,6 +45,9 @@ import android.view.HapticFeedbackConstants;
 import android.view.Window;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.Interpolator;
+import android.view.animation.OvershootInterpolator;
+import android.view.animation.PathInterpolator;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
 import android.widget.Button;
@@ -135,7 +141,26 @@ public class MainActivity extends Activity {
         final Set<String> sel = new HashSet<>();   // multi-select
         boolean selMode;
         List<String[]> files = new ArrayList<>();
+        // ---- state UI (untuk animasi in-place, tanpa rebuild seluruh list) ----
+        FrameLayout host;                 // slot isi file di dalam kartu
+        TextView arrow, selCnt, unpackChip;
+        LinearLayout selBar;
+        ValueAnimator anim, selAnim;
+        float selP;                       // progres mode seleksi 0..1
+        final List<Ref> refs = new ArrayList<>();
     }
+
+    /** Referensi view satu baris file, supaya seleksi bisa diupdate tanpa rebuild. */
+    private static final class Ref {
+        String name = "";
+        boolean sel;
+        GradientDrawable bg;
+        TextView ck;
+        View acts;
+    }
+
+    private static final Interpolator EASE = new PathInterpolator(0.4f, 0f, 0.2f, 1f);
+    private boolean popping;   // arah transisi layar: true = kembali
 
     /** Volume penyimpanan eksternal (micro SD / USB OTG). */
     private static final class Vol {
@@ -427,8 +452,11 @@ public class MainActivity extends Activity {
         View v = stack.get(stack.size() - 1).view;
         content.removeAllViews();
         content.addView(v, new FrameLayout.LayoutParams(-1, -1));
+        v.animate().cancel();
         v.setAlpha(0f);
-        v.animate().alpha(1f).setDuration(160).start();
+        v.setTranslationX(dp(popping ? -22 : 22));
+        v.animate().alpha(1f).translationX(0f).setDuration(240).setInterpolator(EASE).withLayer().start();
+        popping = false;
         updateHeader();
         Runnable r = stack.get(stack.size() - 1).onShow;
         if (r != null) r.run();
@@ -476,6 +504,7 @@ public class MainActivity extends Activity {
             }
             if (top.explorer != null && top.explorer.up()) return;
             stack.remove(stack.size() - 1);
+            popping = true;
             showTop();
         } else {
             super.onBackPressed();
@@ -721,6 +750,13 @@ public class MainActivity extends Activity {
     private View projectCard(Row r) {
         final boolean pin = r.kind == Row.PIN;
         boolean active = !pin && r.name.equals(project());
+        if (r.b == null) {
+            r.b = browse.get(r.name);
+            if (r.b == null) {
+                r.b = new Browse();
+                browse.put(r.name, r.b);
+            }
+        }
         FrameLayout wrap = new FrameLayout(this);
         wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
         LinearLayout card = new LinearLayout(this);
@@ -748,7 +784,9 @@ public class MainActivity extends Activity {
         nm.setSingleLine(true);
         nm.setEllipsize(TextUtils.TruncateAt.END);
         nameRow.addView(nm, new LinearLayout.LayoutParams(-2, -2, 0f));
-        TextView arrow = text(r.b != null && r.b.open ? "  ▴" : "  ▾", 12, SUB, false);
+        TextView arrow = text("  ▾", 12, SUB, false);
+        arrow.setRotation(r.b.open ? 180f : 0f);
+        r.b.arrow = arrow;
         nameRow.addView(arrow);
         if (active) {
             TextView t = text("ACTIVE", 9, 0xFF2B0A0A, true);
@@ -789,7 +827,10 @@ public class MainActivity extends Activity {
         head.addView(go, new LinearLayout.LayoutParams(dp(54), dp(54)));
         card.addView(head);
 
-        if (r.b != null && r.b.open) card.addView(filesView(r));
+        FrameLayout host = new FrameLayout(this);
+        r.b.host = host;
+        if (r.b.open) host.addView(filesView(r), new FrameLayout.LayoutParams(-1, -2));
+        card.addView(host, new LinearLayout.LayoutParams(-1, -2));
         wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
         return wrap;
     }
@@ -880,17 +921,16 @@ public class MainActivity extends Activity {
         b.files = res;
     }
 
+    /** Baca ulang isi folder di background; tampilan lama tetap sampai data baru siap, lalu diganti dengan animasi. */
     private void reloadDir(Row r) {
         final Browse b = r.b;
         b.sel.clear();
         b.selMode = false;
-        b.loading = true;
-        homeAdapter.notifyDataSetChanged();
         new Thread(() -> {
             loadDir(r.name, b);
             ui.post(() -> {
                 b.loading = false;
-                homeAdapter.notifyDataSetChanged();
+                refreshFiles(r);
             });
         }).start();
     }
@@ -901,12 +941,95 @@ public class MainActivity extends Activity {
             browse.put(r.name, r.b);
         }
         if (r.kind == Row.PIN) r.b.abs = r.name;
-        r.b.open = !r.b.open;
-        if (!r.b.open) {
+        final Browse b = r.b;
+        if (b.open) {
+            b.open = false;
+            b.sel.clear();
+            b.selMode = false;
+            rotateArrow(b);
+            final FrameLayout host = b.host;
+            if (host == null || !host.isAttachedToWindow()) {
+                homeAdapter.notifyDataSetChanged();
+                return;
+            }
+            animateHeight(b, host, host.getHeight(), 0, host::removeAllViews);
+            return;
+        }
+        b.open = true;
+        b.loading = true;
+        refreshFiles(r);   // buka langsung dengan "Loading…", isi menyusul
+        reloadDir(r);
+    }
+
+    private void rotateArrow(Browse b) {
+        if (b.arrow != null) b.arrow.animate().rotation(b.open ? 180f : 0f).setDuration(240).setInterpolator(EASE).start();
+    }
+
+    private int measureH(View v, int width) {
+        v.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        return v.getMeasuredHeight();
+    }
+
+    /** Animasi tinggi view; kalau ada animasi sebelumnya, dibatalkan dan lanjut dari tinggi saat ini. */
+    private void animateHeight(final Browse b, final View v, int from, final int to, final Runnable end) {
+        if (b.anim != null) b.anim.cancel();
+        final ViewGroup.LayoutParams lp0 = v.getLayoutParams();
+        if (from == to) {
+            lp0.height = -2;
+            v.setLayoutParams(lp0);
+            if (end != null) end.run();
+            return;
+        }
+        lp0.height = from;
+        v.setLayoutParams(lp0);
+        ValueAnimator a = ValueAnimator.ofInt(from, to);
+        a.setDuration(Math.min(360, 180 + Math.abs(to - from) / 8));
+        a.setInterpolator(EASE);
+        a.addUpdateListener(x -> {
+            ViewGroup.LayoutParams lp = v.getLayoutParams();
+            lp.height = (Integer) x.getAnimatedValue();
+            v.setLayoutParams(lp);
+        });
+        a.addListener(new AnimatorListenerAdapter() {
+            boolean cancelled;
+            @Override public void onAnimationCancel(Animator an) { cancelled = true; }
+            @Override public void onAnimationEnd(Animator an) {
+                if (cancelled) return;
+                ViewGroup.LayoutParams lp = v.getLayoutParams();
+                lp.height = -2;
+                v.setLayoutParams(lp);
+                if (end != null) end.run();
+            }
+        });
+        b.anim = a;
+        a.start();
+    }
+
+    /** Ganti isi kartu project in-place: konten baru fade-in, tinggi kartu beranimasi (tidak rebuild seluruh list). */
+    private void refreshFiles(Row r) {
+        final Browse b = r.b;
+        if (b == null || !b.open) return;
+        final FrameLayout host = b.host;
+        if (host == null || !host.isAttachedToWindow() || host.getWidth() == 0) {
             homeAdapter.notifyDataSetChanged();
             return;
         }
-        reloadDir(r);
+        rotateArrow(b);
+        if (b.selAnim != null) b.selAnim.cancel();
+        final int from = host.getHeight();
+        final View nv = filesView(r);
+        host.removeAllViews();
+        host.addView(nv, new FrameLayout.LayoutParams(-1, -2));
+        final int to = measureH(nv, host.getWidth());
+        nv.setAlpha(0f);
+        nv.animate().alpha(1f).setDuration(240).setStartDelay(40).setInterpolator(EASE).start();
+        animateHeight(b, host, from, to, null);
+    }
+
+    private boolean animating() {
+        for (Browse b : browse.values()) if (b.anim != null && b.anim.isRunning()) return true;
+        return false;
     }
 
     private TextView tab(String label, boolean on, Runnable click) {
@@ -964,37 +1087,56 @@ public class MainActivity extends Activity {
             box.addView(up);
         }
 
-        if (b.selMode) {
-            TextView cnt = text(b.sel.size() + " selected", 12, ACCENT, true);
-            cnt.setPadding(0, dp(8), 0, dp(6));
-            box.addView(cnt);
-            HorizontalScrollView hs = new HorizontalScrollView(this);
-            hs.setHorizontalScrollBarEnabled(false);
-            LinearLayout acts = new LinearLayout(this);
-            String[] labels = {"All", "Copy", "Move", "Delete", "✕"};
-            Runnable[] clicks = {
-                    () -> {
-                        for (String[] f : b.files) if (!f[0].equals("M")) b.sel.add(f[1]);
-                        homeAdapter.notifyDataSetChanged();
-                    },
-                    () -> openExplorerMulti(selectedPaths(r), false),
-                    () -> openExplorerMulti(selectedPaths(r), true),
-                    () -> confirmDeleteSel(r),
-                    () -> {
-                        b.sel.clear();
-                        b.selMode = false;
-                        homeAdapter.notifyDataSetChanged();
-                    }};
-            for (int i = 0; i < labels.length; i++) {
-                LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-2, -2);
-                al.rightMargin = dp(8);
-                acts.addView(tab(labels[i], i == 3, clicks[i]), al);
-            }
-            hs.addView(acts);
-            LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-1, -2);
-            hl.bottomMargin = dp(6);
-            box.addView(hs, hl);
+        // bar seleksi selalu dibuat (disembunyikan saat tidak aktif) supaya bisa dianimasikan
+        final boolean canUnpack = b.abs == null && b.base == 0 && b.sub.isEmpty();
+        b.refs.clear();
+        b.selP = b.selMode ? 1f : 0f;
+        b.unpackChip = null;
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.VERTICAL);
+        TextView cnt = text(b.sel.size() + " selected", 12, ACCENT, true);
+        cnt.setPadding(0, dp(8), 0, dp(6));
+        bar.addView(cnt);
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout acts = new LinearLayout(this);
+        List<String> labels = new ArrayList<>();
+        List<Runnable> clicks = new ArrayList<>();
+        labels.add("All");
+        clicks.add(() -> {
+            for (String[] f : b.files) if (!f[0].equals("M")) b.sel.add(f[1]);
+            updateSel(r);
+        });
+        if (canUnpack) {
+            labels.add("Unpack");
+            clicks.add(() -> multiUnpack(r));
         }
+        labels.add("Copy");
+        clicks.add(() -> openExplorerMulti(selectedPaths(r), false));
+        labels.add("Move");
+        clicks.add(() -> openExplorerMulti(selectedPaths(r), true));
+        labels.add("Delete");
+        clicks.add(() -> confirmDeleteSel(r));
+        labels.add("✕");
+        clicks.add(() -> {
+            b.sel.clear();
+            setSelMode(r, false);
+        });
+        for (int i = 0; i < labels.size(); i++) {
+            LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-2, -2);
+            al.rightMargin = dp(8);
+            TextView chipV = tab(labels.get(i), labels.get(i).equals("Delete"), clicks.get(i));
+            if (labels.get(i).equals("Unpack")) b.unpackChip = chipV;
+            acts.addView(chipV, al);
+        }
+        hs.addView(acts);
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-1, -2);
+        hl.bottomMargin = dp(6);
+        bar.addView(hs, hl);
+        b.selBar = bar;
+        b.selCnt = cnt;
+        bar.setVisibility(b.selMode ? View.VISIBLE : View.GONE);
+        box.addView(bar, new LinearLayout.LayoutParams(-1, -2));
 
         if (b.loading) {
             box.addView(text("Loading…", 12, SUB, false));
@@ -1006,6 +1148,7 @@ public class MainActivity extends Activity {
         } else {
             for (String[] f : b.files) box.addView(entryRow(r, f));
         }
+        if (b.unpackChip != null) b.unpackChip.setAlpha(countUnpackable(b) > 0 ? 1f : 0.4f);
         return box;
     }
 
@@ -1038,8 +1181,125 @@ public class MainActivity extends Activity {
     private void toggleSel(Row r, String name) {
         Browse b = r.b;
         if (!b.sel.remove(name)) b.sel.add(name);
-        b.selMode = !b.sel.isEmpty();
-        homeAdapter.notifyDataSetChanged();
+        setSelMode(r, !b.sel.isEmpty());
+    }
+
+    private void setW(View v, int w) {
+        ViewGroup.LayoutParams lp = v.getLayoutParams();
+        if (lp != null && lp.width != w) {
+            lp.width = w;
+            v.setLayoutParams(lp);
+        }
+    }
+
+    private void applySelProgress(Browse b, float p) {
+        for (Ref x : b.refs) {
+            setW(x.ck, (int) (dp(28) * p));
+            x.ck.setAlpha(p);
+            setW(x.acts, (int) (dp(70) * (1f - p)));
+            x.acts.setAlpha(1f - p);
+        }
+    }
+
+    /** Update centang, warna baris, dan counter in-place (tanpa rebuild). */
+    private void updateSel(Row r) {
+        final Browse b = r.b;
+        for (Ref x : b.refs) {
+            boolean sl = b.sel.contains(x.name);
+            if (sl == x.sel) continue;
+            x.sel = sl;
+            x.ck.setText(sl ? "☑" : "☐");
+            x.ck.setTextColor(sl ? ACCENT : SUB);
+            final GradientDrawable g = x.bg;
+            ValueAnimator ca = ValueAnimator.ofArgb(sl ? 0x00FF8282 : 0x22FF8282, sl ? 0x22FF8282 : 0x00FF8282);
+            ca.setDuration(180);
+            ca.addUpdateListener(an -> g.setColor((Integer) an.getAnimatedValue()));
+            ca.start();
+            if (sl) {
+                x.ck.setScaleX(0.6f);
+                x.ck.setScaleY(0.6f);
+                x.ck.animate().scaleX(1f).scaleY(1f).setDuration(220).setInterpolator(new OvershootInterpolator(2f)).start();
+            }
+        }
+        if (b.selCnt != null) b.selCnt.setText(b.sel.size() + " selected");
+        if (b.unpackChip != null) b.unpackChip.setAlpha(countUnpackable(b) > 0 ? 1f : 0.4f);
+    }
+
+    /** Masuk/keluar mode seleksi: bar turun/naik, kolom centang & tombol aksi bergeser mulus. */
+    private void setSelMode(Row r, boolean on) {
+        final Browse b = r.b;
+        updateSel(r);
+        if (b.selMode == on) return;
+        b.selMode = on;
+        final LinearLayout bar = b.selBar;
+        if (bar == null || b.host == null || !bar.isAttachedToWindow() || b.host.getWidth() == 0) {
+            homeAdapter.notifyDataSetChanged();
+            return;
+        }
+        if (b.selAnim != null) b.selAnim.cancel();
+        bar.setVisibility(View.VISIBLE);
+        final int barH = measureH(bar, b.host.getWidth() - dp(24));
+        ValueAnimator a = ValueAnimator.ofFloat(b.selP, on ? 1f : 0f);
+        a.setDuration(260);
+        a.setInterpolator(EASE);
+        a.addUpdateListener(x -> {
+            float pr = (Float) x.getAnimatedValue();
+            b.selP = pr;
+            ViewGroup.LayoutParams lp = bar.getLayoutParams();
+            lp.height = (int) (barH * pr);
+            bar.setLayoutParams(lp);
+            bar.setAlpha(pr);
+            applySelProgress(b, pr);
+        });
+        a.addListener(new AnimatorListenerAdapter() {
+            boolean cancelled;
+            @Override public void onAnimationCancel(Animator an) { cancelled = true; }
+            @Override public void onAnimationEnd(Animator an) {
+                if (cancelled) return;
+                ViewGroup.LayoutParams lp = bar.getLayoutParams();
+                lp.height = -2;
+                bar.setLayoutParams(lp);
+                if (!on) bar.setVisibility(View.GONE);
+            }
+        });
+        b.selAnim = a;
+        a.start();
+    }
+
+    private static boolean isSuperImg(String n) {
+        return n.equalsIgnoreCase("super.img");
+    }
+
+    /** File .img terpilih yang bisa di-unpack massal (super.img & nama berkoma dilewati). */
+    private int countUnpackable(Browse b) {
+        int c = 0;
+        for (String[] f : b.files)
+            if (f[0].equals("F") && b.sel.contains(f[1]) && "img".equals(unpackKind(f[1])) && !isSuperImg(f[1]) && !f[1].contains(",")) c++;
+        return c;
+    }
+
+    /** Unpack semua .img yang diceklis sekaligus. */
+    private void multiUnpack(Row r) {
+        final Browse b = r.b;
+        List<String> imgs = new ArrayList<>();
+        boolean hasSuper = false;
+        for (String[] f : b.files) {
+            if (!f[0].equals("F") || !b.sel.contains(f[1]) || !"img".equals(unpackKind(f[1]))) continue;
+            if (isSuperImg(f[1])) hasSuper = true;
+            else if (!f[1].contains(",")) imgs.add(f[1]);
+        }
+        if (imgs.isEmpty()) {
+            toast(hasSuper ? "super.img is unpacked from its ⋮ menu (Unpack super)" : "Select .img files to unpack");
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < imgs.size() && i < 6; i++) {
+            if (i > 0) names.append(", ");
+            names.append(imgs.get(i));
+        }
+        if (imgs.size() > 6) names.append(" +").append(imgs.size() - 6).append(" more");
+        String desc = imgs.size() + " IMG selected: " + names + (hasSuper ? "\n(super.img skipped — use its ⋮ menu)" : "");
+        quickUnpack(r.name, TextUtils.join(",", imgs), "img", desc);
     }
 
     private List<String> selectedPaths(Row r) {
@@ -1065,7 +1325,7 @@ public class MainActivity extends Activity {
                 runner.capture(sh.toString());
                 loadDir(r.name, b);
                 ui.post(() -> {
-                    homeAdapter.notifyDataSetChanged();
+                    refreshFiles(r);
                     reloadHome();
                 });
             }).start();
@@ -1084,13 +1344,15 @@ public class MainActivity extends Activity {
         }
         final boolean dir = f[0].equals("D");
         final boolean selected = b.sel.contains(f[1]);
+        final float sp = b.selMode ? 1f : 0f;
         row.setPadding(dp(2), dp(3), 0, dp(3));
-        row.setBackground(ripple(selected ? 0x22FF8282 : 0x00000000, 10));
-        if (b.selMode) {
-            TextView ck = text(selected ? "☑" : "☐", 18, selected ? ACCENT : SUB, false);
-            ck.setGravity(Gravity.CENTER);
-            row.addView(ck, new LinearLayout.LayoutParams(dp(28), -2));
-        }
+        GradientDrawable bgShape = rect(selected ? 0x22FF8282 : 0x00FF8282, 10);
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bgShape, null));
+        // kolom centang selalu ada (lebar 0 saat tidak seleksi) agar bisa dianimasikan
+        TextView ck = text(selected ? "☑" : "☐", 18, selected ? ACCENT : SUB, false);
+        ck.setGravity(Gravity.CENTER);
+        ck.setAlpha(sp);
+        row.addView(ck, new LinearLayout.LayoutParams((int) (dp(28) * sp), -2));
         LinearLayout.LayoutParams mlp;
         if (dir) {
             ImageView ic = new ImageView(this);
@@ -1116,21 +1378,34 @@ public class MainActivity extends Activity {
             meta = humanSize(sz);
         }
         final long fsz = sz;
+        final String fmeta = meta;
         TextView mt = text(meta, 12, SUB, false);
-        mt.setPadding(dp(8), 0, dp(b.selMode ? 8 : 0), 0);
+        mt.setPadding(dp(8), 0, dp(4), 0);
         row.addView(mt);
-        if (!b.selMode) {
-            TextView more = text("⋮", 18, SUB, true);
-            more.setGravity(Gravity.CENTER);
-            more.setOnClickListener(v -> entryMenu(r, f[1], dir, meta));
-            row.addView(more, new LinearLayout.LayoutParams(dp(30), dp(40)));
-            ImageView del = new ImageView(this);
-            del.setImageResource(R.drawable.ic_delete);
-            del.setPadding(dp(10), dp(10), dp(10), dp(10));
-            del.setOnClickListener(v -> confirmDelete(r, f[1], dir));
-            row.addView(del, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        }
+        LinearLayout acts = new LinearLayout(this);
+        acts.setGravity(Gravity.CENTER_VERTICAL);
+        acts.setAlpha(1f - sp);
+        TextView more = text("⋮", 18, SUB, true);
+        more.setGravity(Gravity.CENTER);
+        more.setOnClickListener(v -> entryMenu(r, f[1], dir, fmeta));
+        acts.addView(more, new LinearLayout.LayoutParams(dp(30), dp(40)));
+        ImageView del = new ImageView(this);
+        del.setImageResource(R.drawable.ic_delete);
+        del.setPadding(dp(10), dp(10), dp(10), dp(10));
+        del.setOnClickListener(v -> confirmDelete(r, f[1], dir));
+        acts.addView(del, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        row.addView(acts, new LinearLayout.LayoutParams((int) (dp(70) * (1f - sp)), dp(40)));
+
+        Ref ref = new Ref();
+        ref.name = f[1];
+        ref.sel = selected;
+        ref.bg = bgShape;
+        ref.ck = ck;
+        ref.acts = acts;
+        b.refs.add(ref);
+
         row.setOnLongClickListener(v -> {
+            v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
             toggleSel(r, f[1]);
             return true;
         });
@@ -1225,7 +1500,7 @@ public class MainActivity extends Activity {
                     runner.capture("d=" + Runner.q(r.name) + "\nrm -rf " + dirExpr(b) + "/" + Runner.q(name));
                     loadDir(r.name, b);
                     ui.post(() -> {
-                        homeAdapter.notifyDataSetChanged();
+                        refreshFiles(r);
                         reloadHome();
                     });
                 }).start())
@@ -1354,7 +1629,12 @@ public class MainActivity extends Activity {
                 r.node = n;
                 res.add(r);
             }
-            ui.post(() -> {
+            ui.post(new Runnable() {
+              @Override public void run() {
+                if (animating()) {
+                    ui.postDelayed(this, 90);
+                    return;
+                }
                 rows.clear();
                 rows.addAll(res);
                 if (homeAdapter != null) homeAdapter.notifyDataSetChanged();
@@ -1376,6 +1656,7 @@ public class MainActivity extends Activity {
                         }
                     }
                 }
+              }
             });
         }).start();
     }
@@ -1559,9 +1840,18 @@ public class MainActivity extends Activity {
         final AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setView(box).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
-        final String uk = (!dir && r.b != null && r.b.abs == null && r.b.base == 0 && r.b.sub.isEmpty()) ? unpackKind(name) : null;
+        d.getWindow().setWindowAnimations(android.R.style.Animation_Toast);
+        box.setAlpha(0f);
+        box.setTranslationY(dp(14));
+        d.setOnShowListener(x -> box.animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(EASE).start());
+        String ukRaw = (!dir && r.b != null && r.b.abs == null && r.b.base == 0 && r.b.sub.isEmpty()) ? unpackKind(name) : null;
+        // IMG biasa tidak di-unpack dari sini (pakai multi-select > Unpack); menu ⋮ hanya untuk super.img
+        if ("img".equals(ukRaw)) ukRaw = isSuperImg(name) ? "super" : null;
+        final String uk = ukRaw;
         if (uk != null) {
-            addAction(box, R.drawable.ic_folder, "Unpack", "Extract this " + uk.toUpperCase(Locale.ROOT) + " into the project", () -> {
+            final boolean sup = uk.equals("super");
+            addAction(box, R.drawable.ic_folder, sup ? "Unpack super" : "Unpack",
+                    sup ? "Extract partitions from super.img" : "Extract this " + uk.toUpperCase(Locale.ROOT) + " into the project", () -> {
                 d.dismiss();
                 quickUnpack(r.name, name, uk);
             });
@@ -1601,6 +1891,10 @@ public class MainActivity extends Activity {
         row.setOnClickListener(v -> click.run());
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.topMargin = dp(8);
+        int idx = Math.max(0, box.getChildCount() - 2);
+        row.setAlpha(0f);
+        row.setTranslationY(dp(10));
+        row.animate().alpha(1f).translationY(0f).setDuration(240).setStartDelay(60L + idx * 40L).setInterpolator(EASE).start();
         box.addView(row, lp);
     }
 
@@ -1940,7 +2234,36 @@ public class MainActivity extends Activity {
     }
 
     private void quickUnpack(String project, String name, String kind) {
+        quickUnpack(project, name, kind, null);
+    }
+
+    /** Buka dialog Unpack super (pakai menu "Unpack super" dari dna.xml: pilih partisi, auto unpack, hapus sumber). */
+    private void openSuperUnpack(String project) {
+        new Thread(() -> {
+            runner.capture("echo " + Runner.q(project) + " > \"$TMPDIR/DNA.ini\"");
+            Menu.Node found = null;
+            try {
+                List<Menu.Node> all = new ArrayList<>();
+                Menu.flatten(Menu.parse(asset("menu/dna.xml")), all);
+                for (Menu.Node x : all)
+                    if (x.type == Menu.ACTION && "Unpack super".equals(x.title)) { found = x; break; }
+            } catch (Exception ignored) { }
+            final Menu.Node node = found;
+            ui.post(() -> {
+                updateHeader();
+                if (node == null) toast("Unpack super menu not found");
+                else onNode(node);
+            });
+        }).start();
+    }
+
+    private void quickUnpack(String project, String name, String kind, String desc) {
+        if (kind.equals("super")) {
+            openSuperUnpack(project);
+            return;
+        }
         Menu.Node n = new Menu.Node(Menu.ACTION);
+        if (desc != null) n.desc = desc;
         Map<String, String> fixed = new LinkedHashMap<>();
         switch (kind) {
             case "br": n.title = "Unpack br"; n.set = "dna extract $BR --delete $silence"; fixed.put("BR", name); break;
