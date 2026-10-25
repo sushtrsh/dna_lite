@@ -1,5 +1,18 @@
 package com.dna.tools;
 
+import static com.dna.tools.Skin.ACCENT;
+import static com.dna.tools.Skin.BG;
+import static com.dna.tools.Skin.DIVIDER;
+import static com.dna.tools.Skin.ERR;
+import static com.dna.tools.Skin.LOGBG;
+import static com.dna.tools.Skin.LOGTXT;
+import static com.dna.tools.Skin.OK;
+import static com.dna.tools.Skin.ONACCENT;
+import static com.dna.tools.Skin.RIPPLE;
+import static com.dna.tools.Skin.SUB;
+import static com.dna.tools.Skin.SURFACE;
+import static com.dna.tools.Skin.SURFACE2;
+import static com.dna.tools.Skin.TXT;
 import android.Manifest;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -89,9 +102,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    private static final int BG = 0xFF0C111E, SURFACE = 0xFF141B2D, SURFACE2 = 0xFF1B2438;
-    private static final int ACCENT = 0xFFFF8282, TXT = 0xFFE9ECF3, SUB = 0xFF8A93A8;
-    private static final int OK = 0xFF66BB6A, ERR = 0xFFEF5350;
     private static final String LOAD =
             "for d in \"$DNA_DIR\"/DNA_*/; do\n"
             + "  [ -d \"$d\" ] || continue\n"
@@ -239,7 +249,7 @@ public class MainActivity extends Activity {
     private final Map<String, Browse> browse = new HashMap<>();
     private volatile Runner.Started running;
     private boolean busy, fg;
-    private View runBar, logsBtn;
+    private View runBar, logsBtn, settingsBtn;
     private ListView homeList;
     private String pendingOpen;
     private boolean pendingUnpacked;
@@ -256,6 +266,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Skin.load(prefs());
+        applyWindowSkin();
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
@@ -308,11 +320,17 @@ public class MainActivity extends Activity {
         lg.setBackground(ripple(0x00000000, 20));
         lg.setOnClickListener(v -> openLogs());
         logsBtn = lg;
+        TextView st = text("⚙", 22, ACCENT, false);
+        st.setGravity(Gravity.CENTER);
+        st.setBackground(ripple(0x00000000, 20));
+        st.setOnClickListener(v -> openSettings());
+        settingsBtn = st;
+        row.addView(settingsBtn, new LinearLayout.LayoutParams(dp(40), dp(40)));
         row.addView(logsBtn, new LinearLayout.LayoutParams(-2, dp(40)));
         row.addView(plus, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         View divider = new View(this);
-        divider.setBackgroundColor(0x24FFFFFF);
+        divider.setBackgroundColor(DIVIDER);
 
         ProgressBar pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         pb.setIndeterminate(true);
@@ -410,7 +428,7 @@ public class MainActivity extends Activity {
     }
 
     private Drawable ripple(int color, int radiusDp) {
-        return new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rect(color, radiusDp), null);
+        return new RippleDrawable(ColorStateList.valueOf(RIPPLE), rect(color, radiusDp), null);
     }
 
     private TextView text(String s, int sp, int color, boolean bold) {
@@ -434,7 +452,7 @@ public class MainActivity extends Activity {
         b.setText(s);
         b.setAllCaps(false);
         b.setTextSize(15);
-        b.setTextColor(color == ACCENT ? 0xFF2B0A0A : Color.WHITE);
+        b.setTextColor(color == ACCENT ? ONACCENT : color == ERR ? Color.WHITE : TXT);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setBackground(ripple(color, 16));
         return b;
@@ -514,6 +532,7 @@ public class MainActivity extends Activity {
         titleBox.setVisibility(home ? View.GONE : View.VISIBLE);
         plus.setVisibility(home ? View.VISIBLE : View.GONE);
         logsBtn.setVisibility(home ? View.VISIBLE : View.GONE);
+        settingsBtn.setVisibility(home ? View.VISIBLE : View.GONE);
         runBar.setVisibility(busy ? View.VISIBLE : View.GONE);
         boolean showSub = !home && top != null && !top.plain;
         sub.setVisibility(showSub ? View.VISIBLE : View.GONE);
@@ -554,7 +573,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmDiscard() {
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle("Discard changes?")
                 .setMessage("This file has unsaved changes.")
                 .setPositiveButton("Discard", (x, w) -> {
@@ -838,7 +857,7 @@ public class MainActivity extends Activity {
         r.b.arrow = arrow;
         nameRow.addView(arrow);
         if (active) {
-            TextView t = text("ACTIVE", 9, 0xFF2B0A0A, true);
+            TextView t = text("ACTIVE", 9, ONACCENT, true);
             t.setBackground(rect(ACCENT, 8));
             t.setPadding(dp(6), dp(2), dp(6), dp(2));
             LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-2, -2);
@@ -1112,7 +1131,7 @@ public class MainActivity extends Activity {
     }
 
     private TextView tab(String label, boolean on, Runnable click) {
-        TextView t = text(label, 12, on ? 0xFF2B0A0A : TXT, true);
+        TextView t = text(label, 12, on ? ONACCENT : TXT, true);
         t.setPadding(dp(14), dp(7), dp(14), dp(7));
         t.setBackground(rect(on ? ACCENT : SURFACE2, 16));
         t.setOnClickListener(v -> click.run());
@@ -1570,7 +1589,7 @@ public class MainActivity extends Activity {
         final float sp = b.selMode ? 1f : 0f;
         row.setPadding(dp(2), dp(3), 0, dp(3));
         GradientDrawable bgShape = rect(selected ? 0x22FF8282 : 0x00FF8282, 10);
-        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bgShape, null));
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(RIPPLE), bgShape, null));
         // kolom centang selalu ada (lebar 0 saat tidak seleksi) agar bisa dianimasikan
         TextView ck = text(selected ? "☑" : "☐", 18, selected ? ACCENT : SUB, false);
         ck.setGravity(Gravity.CENTER);
@@ -1716,7 +1735,7 @@ public class MainActivity extends Activity {
     private void confirmDelete(Row r, String name, boolean dir) {
         if (name.isEmpty() || name.equals(".") || name.equals("..") || name.contains("/")) return;
         final Browse b = r.b;
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle("Delete " + (dir ? "folder" : "file") + "?")
                 .setMessage(pathOf(r) + "/" + name + "\n\nThis cannot be undone.")
                 .setPositiveButton("Delete", (x, w) -> new Thread(() -> {
@@ -2006,7 +2025,7 @@ public class MainActivity extends Activity {
     }
 
     private void unpinDialog(String path) {
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle("Remove from menu?")
                 .setMessage(path + "\n\nThe folder itself is not deleted.")
                 .setPositiveButton("Remove", (x, w) -> {
@@ -2060,7 +2079,7 @@ public class MainActivity extends Activity {
         TextView mt = text((dir ? "Folder" : "File") + "  •  " + meta, 12, SUB, false);
         mt.setPadding(0, dp(2), 0, dp(12));
         box.addView(mt);
-        final AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        final AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setView(box).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
         d.getWindow().setWindowAnimations(android.R.style.Animation_Toast);
@@ -2685,7 +2704,7 @@ public class MainActivity extends Activity {
         TextView hint = text("Folder will be created in /sdcard/DNA as DNA_<name>", 12, SUB, false);
         hint.setPadding(0, dp(8), 0, 0);
         box.addView(hint);
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle("New project").setView(box)
                 .setPositiveButton("Create", null).setNegativeButton("Cancel", null).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
@@ -2734,7 +2753,7 @@ public class MainActivity extends Activity {
         hint.setTypeface(Typeface.MONOSPACE);
         hint.setPadding(0, dp(8), 0, 0);
         box.addView(hint);
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle("Rename " + (dir ? "folder" : "file")).setView(box)
                 .setPositiveButton("Rename", null).setNegativeButton("Cancel", null).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
@@ -2769,7 +2788,7 @@ public class MainActivity extends Activity {
         TextView hint = text("Folder in /sdcard/DNA will be renamed to DNA_<name>", 12, SUB, false);
         hint.setPadding(0, dp(8), 0, 0);
         box.addView(hint);
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle("Rename project").setView(box)
                 .setPositiveButton("Rename", null).setNegativeButton("Cancel", null).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
@@ -2807,7 +2826,7 @@ public class MainActivity extends Activity {
         TextView mt = text("Project  •  /sdcard/DNA/" + name, 12, SUB, false);
         mt.setPadding(0, dp(2), 0, dp(12));
         box.addView(mt);
-        final AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        final AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setView(box).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
         addAction(box, R.drawable.ic_edit, "Rename", "Change the project name", () -> {
@@ -2822,7 +2841,7 @@ public class MainActivity extends Activity {
     }
 
     private void deleteDialog(String name) {
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle("Delete project?")
                 .setMessage(display(name) + "\n\nAll files in this project will be permanently deleted.")
                 .setPositiveButton("Delete", (x, w) -> {
@@ -2945,7 +2964,7 @@ public class MainActivity extends Activity {
         sbg.setCornerRadii(new float[]{rd, rd, rd, rd, 0, 0, 0, 0});
         sheet.setBackground(sbg);
         View handle = new View(this);
-        handle.setBackground(rect(0x33FFFFFF, 2));
+        handle.setBackground(rect(RIPPLE, 2));
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(dp(36), dp(4));
         hp.gravity = Gravity.CENTER_HORIZONTAL;
         hp.bottomMargin = dp(14);
@@ -2966,7 +2985,7 @@ public class MainActivity extends Activity {
         bl.topMargin = dp(16);
         sheet.addView(btns, bl);
 
-        final Dialog d = new Dialog(this, android.R.style.Theme_Material_Dialog_NoActionBar);
+        final Dialog d = new Dialog(this, Skin.sheetStyle());
         d.setContentView(sheet);
         Window w = d.getWindow();
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -2995,7 +3014,7 @@ public class MainActivity extends Activity {
 
     // ---------- dialog helper ----------
     private void confirmDialog(String title, CharSequence msg, String ok, int okColor, Runnable onOk) {
-        AlertDialog.Builder bd = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog.Builder bd = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle(title).setMessage(msg);
         if (onOk != null) bd.setPositiveButton(ok, (x, w) -> onOk.run()).setNegativeButton("Cancel", null);
         else bd.setPositiveButton(ok, null);
@@ -3027,7 +3046,7 @@ public class MainActivity extends Activity {
         box.addView(cb);
         ScrollView sv = new ScrollView(this);
         sv.addView(box);
-        AlertDialog d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+        AlertDialog d = new AlertDialog.Builder(this, Skin.alertStyle())
                 .setTitle(title).setView(sv)
                 .setPositiveButton("Continue", (x, w) -> go.run()).setNegativeButton("Cancel", null).create();
         d.getWindow().setBackgroundDrawable(rect(SURFACE, 24));
@@ -3179,7 +3198,7 @@ public class MainActivity extends Activity {
             field.setSingleLine(true);
             field.setEllipsize(TextUtils.TruncateAt.MIDDLE);
             field.setOnClickListener(v -> {
-                AlertDialog dd = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                AlertDialog dd = new AlertDialog.Builder(this, Skin.alertStyle())
                         .setItems(arr, (x, w) -> {
                             idx[0] = w;
                             field.setText(arr[w] + "   ▾");
@@ -3306,12 +3325,12 @@ public class MainActivity extends Activity {
             });
             share.setOnClickListener(v -> shareText(jobTitle, tv.getText().toString()));
             tv.setTypeface(Typeface.MONOSPACE);
-            tv.setTextSize(12);
+            tv.setTextSize(Skin.logSp);
             tv.setLineSpacing(0, 1.12f);
-            tv.setTextColor(0xFFD7DAE0);
+            tv.setTextColor(LOGTXT);
             tv.setTextIsSelectable(true);
             tv.setPadding(dp(14), dp(14), dp(14), dp(14));
-            sc.setBackground(rect(0xFF0A0C0F, 16));
+            sc.setBackground(rect(LOGBG, 16));
             sc.addView(tv);
             LinearLayout bar = new LinearLayout(MainActivity.this);
             bar.setGravity(Gravity.CENTER_VERTICAL);
@@ -3428,7 +3447,7 @@ public class MainActivity extends Activity {
             status.setScaleY(0.85f);
             status.animate().scaleX(1f).scaleY(1f).setDuration(220).start();
             btn.setText("Close");
-            btn.setTextColor(0xFF2B0A0A);
+            btn.setTextColor(ONACCENT);
             btn.setBackground(ripple(ACCENT, 16));
             if (openProject != null) {
                 openBtn.setVisibility(View.VISIBLE);
@@ -3512,6 +3531,180 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // ---------- pengaturan ----------
+    private void applyWindowSkin() {
+        Window w = getWindow();
+        w.setBackgroundDrawable(new ColorDrawable(BG));
+        w.setStatusBarColor(BG);
+        w.setNavigationBarColor(BG);
+        int f = w.getDecorView().getSystemUiVisibility();
+        int lightBars = 0x2000 | 0x10; // LIGHT_STATUS_BAR | LIGHT_NAVIGATION_BAR
+        f = Skin.light ? (f | lightBars) : (f & ~lightBars);
+        w.getDecorView().setSystemUiVisibility(f);
+    }
+
+    private void openSettings() {
+        push("Settings", settingsView());
+        stack.get(stack.size() - 1).plain = true;
+        updateHeader();
+    }
+
+    private TextView settingsLabel(String s) {
+        TextView t = text(s, 12, ACCENT, true);
+        t.setPadding(dp(4), dp(20), 0, dp(8));
+        return t;
+    }
+
+    private View settingsView() {
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(14), dp(0), dp(14), dp(28));
+        sv.addView(col);
+
+        col.addView(settingsLabel("THEME"));
+        LinearLayout themeRow = new LinearLayout(this);
+        String[] names = {"Dark", "AMOLED", "Light"};
+        for (int i = 0; i < names.length; i++) {
+            final int m = i;
+            boolean on = Skin.mode == i;
+            TextView c = text(names[i], 14, on ? ONACCENT : TXT, true);
+            c.setGravity(Gravity.CENTER);
+            c.setBackground(ripple(on ? ACCENT : SURFACE2, 14));
+            c.setOnClickListener(v -> {
+                if (Skin.mode == m) return;
+                prefs().edit().putInt("theme", m).apply();
+                recreate();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+            if (i < names.length - 1) lp.rightMargin = dp(8);
+            themeRow.addView(c, lp);
+        }
+        col.addView(themeRow, new LinearLayout.LayoutParams(-1, -2));
+
+        col.addView(settingsLabel("TEXT SIZE"));
+        col.addView(sizeCard("Log output", "font_log", Skin.logSp, true));
+        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(-1, dp(10));
+        col.addView(new View(this), gap);
+        col.addView(sizeCard("Code editor", "font_editor", Skin.editorSp, false));
+
+        col.addView(settingsLabel("BACKUP"));
+        LinearLayout br = new LinearLayout(this);
+        Button ex = button("Export", SURFACE2);
+        Button im = button("Import", SURFACE2);
+        ex.setOnClickListener(v -> exportSettings());
+        im.setOnClickListener(v -> importSettings());
+        LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        l1.rightMargin = dp(8);
+        br.addView(ex, l1);
+        br.addView(im, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        col.addView(br, new LinearLayout.LayoutParams(-1, -2));
+        TextView hint = text("Saved to /sdcard/DNA/dna_settings.txt", 12, SUB, false);
+        hint.setPadding(dp(4), dp(8), 0, 0);
+        col.addView(hint);
+
+        Button reset = button("Reset to default", SURFACE2);
+        reset.setOnClickListener(v -> confirmDialog("Reset settings?", "Theme and text sizes go back to default.", "Reset", ERR, () -> {
+            prefs().edit().remove("theme").remove("font_log").remove("font_editor").apply();
+            recreate();
+        }));
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(-1, dp(48));
+        rl.topMargin = dp(24);
+        col.addView(reset, rl);
+        return sv;
+    }
+
+    /** Kartu slider ukuran font dengan preview langsung; disimpan saat slider dilepas. */
+    private View sizeCard(String label, String key, float value, boolean isLog) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(rect(SURFACE, 16));
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = text(label, 15, TXT, true);
+        TextView val = text(fmtSp(value), 13, ACCENT, true);
+        head.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
+        head.addView(val);
+        card.addView(head);
+
+        SeekBar sb = new SeekBar(this);
+        int max = Math.round((Skin.MAX_SP - Skin.MIN_SP) * 2);
+        sb.setMax(max);
+        sb.setProgress(Math.round((value - Skin.MIN_SP) * 2));
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(-1, -2);
+        sl.topMargin = dp(6);
+        card.addView(sb, sl);
+
+        TextView pv = new TextView(this);
+        pv.setTypeface(Typeface.MONOSPACE);
+        pv.setText(isLog ? "✓ Packed to: /sdcard/DNA/test/out\n✓ Done in 3s" : "#!/system/bin/sh\necho \"hello\"  # 123");
+        pv.setTextColor(isLog ? LOGTXT : TXT);
+        pv.setTextSize(value);
+        pv.setBackground(rect(isLog ? LOGBG : SURFACE2, 12));
+        pv.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(-1, -2);
+        pl.topMargin = dp(10);
+        card.addView(pv, pl);
+
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean u) {
+                float v = Skin.MIN_SP + p / 2f;
+                val.setText(fmtSp(v));
+                pv.setTextSize(v);
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { }
+            @Override public void onStopTrackingTouch(SeekBar s) {
+                float v = Skin.MIN_SP + s.getProgress() / 2f;
+                prefs().edit().putFloat(key, v).apply();
+                if (isLog) Skin.logSp = v; else Skin.editorSp = v;
+            }
+        });
+        return card;
+    }
+
+    private static String fmtSp(float v) {
+        return (v == Math.floor(v) ? String.valueOf((int) v) : String.valueOf(v)) + " sp";
+    }
+
+    private void exportSettings() {
+        final String body = "theme=" + Skin.mode + "\nfont_log=" + Skin.logSp + "\nfont_editor=" + Skin.editorSp + "\n";
+        new Thread(() -> {
+            String r = runner.capture("mkdir -p \"$DNA_DIR\"; printf %s " + Runner.q(body) + " > \"$DNA_DIR/dna_settings.txt\" && echo ok").trim();
+            ui.post(() -> toast(r.endsWith("ok") ? "Exported to /sdcard/DNA/dna_settings.txt" : "Export failed"));
+        }).start();
+    }
+
+    private void importSettings() {
+        new Thread(() -> {
+            String raw = runner.capture("cat \"$DNA_DIR/dna_settings.txt\" 2>/dev/null");
+            SharedPreferences.Editor ed = prefs().edit();
+            int found = 0;
+            for (String line : raw.split("\n")) {
+                String[] kv = line.trim().split("=", 2);
+                if (kv.length != 2) continue;
+                try {
+                    switch (kv[0]) {
+                        case "theme": {
+                            int m = Integer.parseInt(kv[1].trim());
+                            if (m >= Skin.DARK && m <= Skin.LIGHT) { ed.putInt("theme", m); found++; }
+                            break;
+                        }
+                        case "font_log": ed.putFloat("font_log", Skin.clamp(Float.parseFloat(kv[1].trim()))); found++; break;
+                        case "font_editor": ed.putFloat("font_editor", Skin.clamp(Float.parseFloat(kv[1].trim()))); found++; break;
+                        default: break;
+                    }
+                } catch (NumberFormatException ignored) { }
+            }
+            final int n = found;
+            if (n > 0) ed.apply();
+            ui.post(() -> {
+                if (n == 0) toast("No valid settings in /sdcard/DNA/dna_settings.txt");
+                else recreate();
+            });
+        }).start();
+    }
+
     private void openLogs() {
         if (runner == null) return;
         new Thread(() -> {
@@ -3579,14 +3772,14 @@ public class MainActivity extends Activity {
                 root.setPadding(dp(14), dp(12), dp(14), dp(14));
                 TextView tv = new TextView(this);
                 tv.setTypeface(Typeface.MONOSPACE);
-                tv.setTextSize(12);
+                tv.setTextSize(Skin.logSp);
                 tv.setLineSpacing(0, 1.12f);
-                tv.setTextColor(0xFFD7DAE0);
+                tv.setTextColor(LOGTXT);
                 tv.setTextIsSelectable(true);
                 tv.setPadding(dp(14), dp(14), dp(14), dp(14));
                 tv.setText(text);
                 ScrollView sc = new ScrollView(this);
-                sc.setBackground(rect(0xFF0A0C0F, 16));
+                sc.setBackground(rect(LOGBG, 16));
                 sc.addView(tv);
                 root.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1f));
                 LinearLayout row = new LinearLayout(this);

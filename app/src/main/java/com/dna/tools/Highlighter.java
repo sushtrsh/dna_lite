@@ -8,7 +8,7 @@ import java.util.Set;
 
 /** Tokenizer ringan untuk syntax highlight. Tidak bergantung ke Android supaya mudah dites. */
 final class Highlighter {
-    static final int KW = 0xFFC792EA, STR = 0xFFC3E88D, CMT = 0xFF6B7794,
+    static int KW = 0xFFC792EA, STR = 0xFFC3E88D, CMT = 0xFF6B7794,
             NUM = 0xFFF78C6C, TAG = 0xFF82AAFF, ATTR = 0xFFFFCB6B;
 
     interface Sink { void span(int start, int end, int color); }

@@ -1,5 +1,12 @@
 package com.dna.tools;
 
+import static com.dna.tools.Skin.ACCENT;
+import static com.dna.tools.Skin.BG;
+import static com.dna.tools.Skin.ONACCENT;
+import static com.dna.tools.Skin.SUB;
+import static com.dna.tools.Skin.SURFACE;
+import static com.dna.tools.Skin.SURFACE2;
+import static com.dna.tools.Skin.TXT;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -23,8 +30,6 @@ final class EditorView extends LinearLayout {
 
     interface Saver { void save(String text, Done done); }
 
-    private static final int BG = 0xFF0C111E, SURFACE = 0xFF141B2D, SURFACE2 = 0xFF1B2438;
-    private static final int ACCENT = 0xFFFF8282, TXT = 0xFFE9ECF3, SUB = 0xFF8A93A8;
     private static final int HIGHLIGHT_MAX = 120 * 1024;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -49,7 +54,7 @@ final class EditorView extends LinearLayout {
         bar.setPadding(dp(16), dp(6), dp(12), dp(6));
         info = label(c, "", 12, SUB);
         bar.addView(info, new LayoutParams(0, -2, 1f));
-        saveBtn = label(c, "Save", 13, 0xFF2B0A0A);
+        saveBtn = label(c, "Save", 13, ONACCENT);
         saveBtn.setTypeface(Typeface.DEFAULT_BOLD);
         saveBtn.setPadding(dp(18), dp(8), dp(18), dp(8));
         saveBtn.setOnClickListener(v -> save());
@@ -58,7 +63,7 @@ final class EditorView extends LinearLayout {
 
         et = new EditText(c);
         et.setTypeface(Typeface.MONOSPACE);
-        et.setTextSize(12.5f);
+        et.setTextSize(Skin.editorSp);
         et.setTextColor(TXT);
         et.setBackgroundColor(SURFACE);
         et.setGravity(Gravity.TOP | Gravity.START);
