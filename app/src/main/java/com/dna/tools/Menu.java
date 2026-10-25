@@ -21,7 +21,7 @@ final class Menu {
 
     static final class Param {
         String name = "", title = "", label = "", desc = "", value = "", valueSh = "";
-        String type = "", optionsSh = "", separator = "\n", placeholder = "";
+        String type = "", optionsSh = "", separator = "\n", placeholder = "", suffix = "";
         boolean multiple, required;
         int min = 0, max = 100;
         List<Opt> options = new ArrayList<>();
@@ -106,6 +106,7 @@ final class Menu {
                         param.type = attr(p, "type");
                         param.optionsSh = attr(p, "options-sh");
                         param.placeholder = attr(p, "placeholder");
+                        param.suffix = attr(p, "suffix");
                         param.multiple = "true".equals(attr(p, "multiple"));
                         param.required = "true".equals(attr(p, "required"));
                         param.min = toInt(attr(p, "min"), 0);

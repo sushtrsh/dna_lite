@@ -54,6 +54,7 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.HapticFeedbackConstants;
 import android.view.Window;
 import android.view.View;
@@ -220,7 +221,9 @@ public class MainActivity extends Activity {
         long total, avail;
     }
 
-    private static final int EX_PIN = 0, EX_DEST = 1;
+    private static final int EX_PIN = 0, EX_DEST = 1, EX_FILE = 2;
+
+    interface PickCb { void pick(String path); }
 
     private static final class Sec {
         String title = "";
@@ -2175,6 +2178,8 @@ public class MainActivity extends Activity {
         List<String[]> files = new ArrayList<>();
         List<String> multi;   // beberapa sumber sekaligus (multi-select)
         int gen;   // hasil load yang sudah basi diabaikan
+        String suffix = "";   // mode EX_FILE: hanya file dengan ekstensi ini yang bisa dipilih
+        PickCb onPick;
 
         Explorer(int mode, String src, boolean move, String startRoot) {
             this.mode = mode;
@@ -2274,20 +2279,27 @@ public class MainActivity extends Activity {
 
         /** File ditampilkan redup (hanya info, tidak bisa dibuka) supaya isi folder kelihatan. */
         private View fileRow(String name, String size) {
+            final boolean pickable = mode == EX_FILE && onPick != null
+                    && (suffix.isEmpty() || name.toLowerCase(Locale.ROOT).endsWith("." + suffix.toLowerCase(Locale.ROOT)));
             LinearLayout row = new LinearLayout(MainActivity.this);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(dp(6), dp(9), dp(6), dp(9));
             LinearLayout.LayoutParams bl2 = new LinearLayout.LayoutParams(dp(34), dp(22));
             bl2.rightMargin = dp(8);
             row.addView(fileBadge(name), bl2);
-            TextView nm = text(name, 13, SUB, false);
+            TextView nm = text(name, 13, pickable ? TXT : SUB, false);
             nm.setSingleLine(true);
             nm.setEllipsize(TextUtils.TruncateAt.MIDDLE);
             row.addView(nm, new LinearLayout.LayoutParams(0, -2, 1f));
             TextView sz = text(size, 11, SUB, false);
             sz.setPadding(dp(8), 0, 0, 0);
             row.addView(sz);
-            row.setAlpha(0.7f);
+            if (pickable) {
+                row.setBackground(ripple(0x00000000, 10));
+                row.setOnClickListener(x -> onPick.pick(cur + "/" + name));
+            } else {
+                row.setAlpha(0.7f);
+            }
             return row;
         }
 
@@ -2329,7 +2341,9 @@ public class MainActivity extends Activity {
                 hp.bottomMargin = dp(14);
                 box.addView(hc, hp);
             }
-            TextView lbl = text(mode == EX_PIN ? "PICK A FOLDER TO ADD TO THE MENU" : "CHOOSE DESTINATION", 11, SUB, true);
+            TextView lbl = text(mode == EX_PIN ? "PICK A FOLDER TO ADD TO THE MENU"
+                    : mode == EX_FILE ? "TAP A " + (suffix.isEmpty() ? "" : "." + suffix.toUpperCase(Locale.ROOT) + " ") + "FILE TO SELECT"
+                    : "CHOOSE DESTINATION", 11, SUB, true);
             lbl.setPadding(dp(2), 0, 0, dp(8));
             box.addView(lbl);
             if (roots.size() > 1) {
@@ -2370,6 +2384,7 @@ public class MainActivity extends Activity {
                 for (String[] f : files) list.addView(fileRow(f[0], f[1]));
             }
             box.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
+            if (mode == EX_FILE) return;
 
             Button b;
             if (mode == EX_PIN) {
@@ -2438,6 +2453,61 @@ public class MainActivity extends Activity {
             bl.topMargin = dp(12);
             box.addView(b, bl);
         }
+    }
+
+    /** Dialog layar penuh untuk memilih satu file (dipakai param type="file", mis. Flash Image). */
+    private void openFilePicker(String suffix, PickCb cb) {
+        if (runner == null) return;
+        final Dialog d = new Dialog(this, Skin.light ? android.R.style.Theme_Material_Light_NoActionBar
+                : android.R.style.Theme_Material_NoActionBar);
+        final Explorer ex = new Explorer(EX_FILE, null, false, null);
+        ex.suffix = suffix == null ? "" : suffix;
+        ex.onPick = path -> {
+            int i = path.lastIndexOf('/');
+            if (i > 0) prefs().edit().putString("pick_dir", path.substring(0, i)).apply();
+            d.dismiss();
+            cb.pick(path);
+        };
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setBackgroundColor(BG);
+        LinearLayout bar = new LinearLayout(this);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(16), dp(14), dp(8), dp(6));
+        TextView ttl = text("Choose file", 19, TXT, true);
+        TextView close = text("Close", 13, ACCENT, true);
+        close.setPadding(dp(14), dp(10), dp(14), dp(10));
+        close.setOnClickListener(v -> d.dismiss());
+        bar.addView(ttl, new LinearLayout.LayoutParams(0, -2, 1f));
+        bar.addView(close);
+        col.addView(bar, new LinearLayout.LayoutParams(-1, -2));
+        col.addView(ex.box, new LinearLayout.LayoutParams(-1, 0, 1f));
+        d.setContentView(col);
+        Window w = d.getWindow();
+        w.setLayout(-1, -1);
+        w.setBackgroundDrawable(new ColorDrawable(BG));
+        w.setStatusBarColor(BG);
+        w.setNavigationBarColor(BG);
+        int lightBars = 0x2000 | 0x10;
+        int f = w.getDecorView().getSystemUiVisibility();
+        w.getDecorView().setSystemUiVisibility(Skin.light ? (f | lightBars) : (f & ~lightBars));
+        d.setOnKeyListener((dd, code, ev) -> {
+            if (code != KeyEvent.KEYCODE_BACK) return false;
+            if (ev.getAction() == KeyEvent.ACTION_UP && !ex.up()) dd.dismiss();
+            return true;
+        });
+        // mulai dari folder terakhir yang dipakai (kalau masih ada)
+        String last = prefs().getString("pick_dir", "");
+        if (!last.isEmpty()) {
+            for (Vol vol : ex.roots) {
+                if (last.equals(vol.path) || last.startsWith(vol.path + "/")) {
+                    ex.root = vol.path;
+                    ex.go(last);
+                    break;
+                }
+            }
+        }
+        d.show();
     }
 
     private void openExplorerMulti(List<String> srcs, boolean move) {
@@ -3218,6 +3288,23 @@ public class MainActivity extends Activity {
             nlp2.topMargin = dp(6);
             box.addView(none, nlp2);
             g = () -> "";
+        } else if (p.type.equals("file")) {
+            final String[] chosen = {p.value == null ? "" : p.value.trim()};
+            TextView field = text(chosen[0].isEmpty() ? "Tap to choose a file…" : chosen[0], 14,
+                    chosen[0].isEmpty() ? SUB : TXT, false);
+            field.setBackground(ripple(SURFACE2, 12));
+            field.setPadding(dp(14), dp(13), dp(14), dp(13));
+            field.setSingleLine(true);
+            field.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            field.setOnClickListener(v -> openFilePicker(p.suffix, path -> {
+                chosen[0] = path;
+                field.setText(path);
+                field.setTextColor(TXT);
+            }));
+            LinearLayout.LayoutParams flp2 = new LinearLayout.LayoutParams(-1, -2);
+            flp2.topMargin = dp(6);
+            box.addView(field, flp2);
+            g = () -> chosen[0];
         } else {
             EditText et = input();
             et.setText(p.value);

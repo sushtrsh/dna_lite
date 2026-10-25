@@ -13,7 +13,9 @@ if [ ! -s "$jian" ]; then
         for o in "$dir"/*; do
             [ -L "$o" ] || continue
             c=${o##*/}
-            [ "$c" = "control" ] && continue
+            case "$c" in
+                control|sd[a-z]|sd[a-z][a-z]|mmcblk*|nvme*|loop*|ram*|zram*) continue;;
+            esac
             tgt=`readlink -f "$o" 2>/dev/null`
             base=${tgt##*/}
             case "$base" in
