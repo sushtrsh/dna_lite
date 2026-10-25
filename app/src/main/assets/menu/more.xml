@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <group title="Partition Management">
     <action>
-        <title>Extract Image File</title>
-        <set>samples/image.sh extract</set>
-        <param name="IMG" title="Please select partitions (multiple selection supported):" multiple="true" options-sh="samples/image.sh name" required="true"/>
+        <title>Backup Image</title>
+        <set>samples/image.sh backup</set>
+        <param name="IMG" title="Select partitions to back up (multiple selection supported):" multiple="true" options-sh="samples/image.sh name" required="true"/>
     </action>
     
     <action>

@@ -1,53 +1,74 @@
 # Script authored by Han | 情非得已c  
 # Made for use in the Gaoki Assistant tool
 name(){
-jian="$TEMP_DIR/by_name.log"
-if [[ ! -f $jian ]]; then
-        BLOCKDEV=`which blockdev`
-        find /dev/block -type l | while read o; do
-            [[ -d "$o" ]] && continue
-            c=`basename "$o"`
-            echo ${b[@]} | grep -q "$c" && continue
-            echo $c
-        done | sort -u | while read Row; do
-            BLOCK=`find /dev/block -name $Row | head -n 1`
-            if [[ $BLOCK == *uuid/* ]]; then continue; fi
-            if [[ -n $BLOCKDEV ]]; then   
-                size=`blockdev --getsize64 $BLOCK`
-                if [[ $size -ge 1073741824 ]]; then
-                    File_Type=`awk "BEGIN{print $size/1073741824}"`G
-                elif [[ $size -ge 1048576 ]]; then
-                    File_Type=`awk "BEGIN{print $size/1048576}"`MB
-                elif [[ $size -ge 1024 ]]; then
-                    File_Type=`awk "BEGIN{print $size/1024}"`kb
-                elif [[ $size -le 1024 ]]; then
-                    File_Type=${size}b
-                fi
-                    echo "$BLOCK|$Row 「size：$File_Type」" >>$jian
-            else
-                echo "$BLOCK|$Row" >>$jian
-            fi
+# Hanya partisi bernama (by-name) + mapper. Disk utuh (sda/sdb/sdc, mmcblk, nvme) dan
+# perangkat loop/ram/zram dilewati supaya tidak ikut masuk daftar backup/flash.
+jian="$TEMP_DIR/by_name_v2.log"
+rm -f "$TEMP_DIR/by_name.log"
+if [ ! -s "$jian" ]; then
+    : > "$jian"
+    BLOCKDEV=`which blockdev`
+    for dir in /dev/block/by-name /dev/block/bootdevice/by-name /dev/block/platform/*/by-name /dev/block/platform/*/*/by-name /dev/block/mapper; do
+        [ -d "$dir" ] || continue
+        for o in "$dir"/*; do
+            [ -L "$o" ] || continue
+            c=${o##*/}
+            [ "$c" = "control" ] && continue
+            tgt=`readlink -f "$o" 2>/dev/null`
+            base=${tgt##*/}
+            case "$base" in
+                sd[a-z]|sd[a-z][a-z]|mmcblk[0-9]|mmcblk[0-9][0-9]|nvme[0-9]*n[0-9]|loop*|ram*|zram*) continue;;
+            esac
+            echo "$c|$o"
         done
+    done | sort -u -t'|' -k1,1 | while IFS='|' read -r Row BLOCK; do
+        if [ -n "$BLOCKDEV" ]; then
+            size=`blockdev --getsize64 "$BLOCK" 2>/dev/null`
+            [ -z "$size" ] && size=0
+            if [ $size -ge 1073741824 ]; then
+                File_Type=`awk "BEGIN{printf \"%.2f\", $size/1073741824}"`G
+            elif [ $size -ge 1048576 ]; then
+                File_Type=`awk "BEGIN{printf \"%.1f\", $size/1048576}"`MB
+            elif [ $size -ge 1024 ]; then
+                File_Type=`awk "BEGIN{printf \"%.0f\", $size/1024}"`kb
+            else
+                File_Type=${size}b
+            fi
+            echo "$BLOCK|$Row 「size：$File_Type」" >> "$jian"
+        else
+            echo "$BLOCK|$Row" >> "$jian"
+        fi
+    done
 fi
-cat $jian
+cat "$jian"
 }
 
-extract(){
-Extract=$DNA_DIR/image
+backup(){
+Backup=$DNA_DIR/backup
 IFS=$'\n'
-[[ ! -d "$Extract" ]] && mkdir -p "$Extract"
-
+[ ! -d "$Backup" ] && mkdir -p "$Backup"
+echo "Backup folder: $Backup"
+ok=0; fail=0
 for i in $IMG; do
     e=${i##*/}
-    File="$Extract/${e}.img"
-    if [[ ! -L $i ]];then
-        echo "！$e Extraction failed: partition does not exist"
+    File="$Backup/${e}.img"
+    if [ ! -L "$i" ]; then
+        echo "！$e backup failed: partition does not exist"
+        fail=$((fail+1))
     else
-        echo "- Extracting$e partition"
-        dd if="$i" of="$File"
-        echo "- Extracted$e Partition to：$File"
+        echo "- Backing up $e partition"
+        if dd if="$i" of="$File" bs=4M 2>/dev/null; then
+            sz=`ls -lh "$File" 2>/dev/null | awk '{print $5}'`
+            echo "✓ Backed up $e to: $File ($sz)"
+            ok=$((ok+1))
+        else
+            echo "！$e backup failed: could not read partition or storage is full"
+            rm -f "$File"
+            fail=$((fail+1))
+        fi
     fi
 done
+echo "- Finished: $ok backed up, $fail failed"
 }
 
 flash(){
