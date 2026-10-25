@@ -1388,8 +1388,8 @@ public class MainActivity extends Activity {
             return;
         }
         final String project = r.name;
-        // Sama seperti menu Project: kirim nama file polos, tool mencarinya relatif ke $DNA_PRO.
-        // Di sini $DNA_PRO diarahkan ke folder out supaya super.img juga jadi di out.
+        // Sama seperti menu Project: nama file polos, tool mencarinya di $DNA_PRO (root project).
+        // IMG dari out dipindah sementara ke root selama pack lalu dikembalikan; super.img tetap jadi di out.
         final String joined = TextUtils.join(",", names);
         final String outDir = pathOf(r);
         final String desc = names.size() + " IMG: " + TextUtils.join(", ", names.size() > 6 ? names.subList(0, 6) : names)
@@ -1415,7 +1415,25 @@ public class MainActivity extends Activity {
                 }
                 node.title = "Repack to super";
                 node.desc = desc;
-                node.set = "export DNA_PRO=" + Runner.q(outDir) + "\ncd \"$DNA_PRO\" || exit 1\n" + node.set;
+                StringBuilder lst = new StringBuilder();
+                for (String nm : names) lst.append(' ').append(Runner.q(nm));
+                String O = Runner.q(outDir);
+                node.set = "O=" + O + "\n"
+                    + "for n in" + lst + "; do\n"
+                    + "  [ -f \"$DNA_PRO/$n\" ] && mv -f \"$DNA_PRO/$n\" \"$DNA_PRO/$n.dnabak\"\n"
+                    + "  mv -f \"$O/$n\" \"$DNA_PRO/$n\"\n"
+                    + "done\n"
+                    + "back() {\n"
+                    + "  for n in" + lst + "; do\n"
+                    + "    [ -f \"$DNA_PRO/$n\" ] && mv -f \"$DNA_PRO/$n\" \"$O/$n\"\n"
+                    + "    [ -f \"$DNA_PRO/$n.dnabak\" ] && mv -f \"$DNA_PRO/$n.dnabak\" \"$DNA_PRO/$n\"\n"
+                    + "  done\n"
+                    + "}\n"
+                    + "trap 'back; exit 130' INT TERM\n"
+                    + node.set + "\n"
+                    + "rc=$?\n"
+                    + "back\n"
+                    + "exit $rc";
             }
             final Map<String, String> fixed = new LinkedHashMap<>();
             fixed.put("IMG_NAME", joined);
