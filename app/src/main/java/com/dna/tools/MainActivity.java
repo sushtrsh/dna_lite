@@ -1375,14 +1375,12 @@ public class MainActivity extends Activity {
     private void multiRepackSuper(Row r) {
         final Browse b = r.b;
         final List<String> names = new ArrayList<>();
-        final List<String> paths = new ArrayList<>();
         boolean hasSuper = false;
         for (String[] f : b.files) {
             if (!f[0].equals("F") || !b.sel.contains(f[1]) || !"img".equals(unpackKind(f[1]))) continue;
             if (isSuperImg(f[1])) hasSuper = true;
             else if (!f[1].contains(",")) {
                 names.add(f[1]);
-                paths.add(pathOf(r) + "/" + f[1]);
             }
         }
         if (names.isEmpty()) {
@@ -1390,7 +1388,10 @@ public class MainActivity extends Activity {
             return;
         }
         final String project = r.name;
-        final String joined = TextUtils.join(",", paths);
+        // Sama seperti menu Project: kirim nama file polos, tool mencarinya relatif ke $DNA_PRO.
+        // Di sini $DNA_PRO diarahkan ke folder out supaya super.img juga jadi di out.
+        final String joined = TextUtils.join(",", names);
+        final String outDir = pathOf(r);
         final String desc = names.size() + " IMG: " + TextUtils.join(", ", names.size() > 6 ? names.subList(0, 6) : names)
                 + (names.size() > 6 ? " +" + (names.size() - 6) + " more" : "");
         new Thread(() -> {
@@ -1414,6 +1415,7 @@ public class MainActivity extends Activity {
                 }
                 node.title = "Repack to super";
                 node.desc = desc;
+                node.set = "export DNA_PRO=" + Runner.q(outDir) + "\ncd \"$DNA_PRO\" || exit 1\n" + node.set;
             }
             final Map<String, String> fixed = new LinkedHashMap<>();
             fixed.put("IMG_NAME", joined);
